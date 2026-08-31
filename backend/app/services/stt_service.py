@@ -3,6 +3,7 @@ Speech-to-text using OpenAI's local Whisper model. Model is loaded once
 and cached; transcription happens fully on the backend so no audio ever
 needs to reach a third-party API.
 """
+import os
 import tempfile
 from functools import lru_cache
 
@@ -17,8 +18,15 @@ def _model():
 
 
 def transcribe(audio_bytes: bytes, filename_suffix: str = ".webm") -> str:
-    with tempfile.NamedTemporaryFile(suffix=filename_suffix, delete=True) as tmp:
-        tmp.write(audio_bytes)
-        tmp.flush()
-        result = _model().transcribe(tmp.name)
-    return result.get("text", "").strip()
+    fd, temp_path = tempfile.mkstemp(suffix=filename_suffix)
+
+    try:
+        with os.fdopen(fd, "wb") as tmp:
+            tmp.write(audio_bytes)
+
+        result = _model().transcribe(temp_path)
+        return result.get("text", "").strip()
+
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
