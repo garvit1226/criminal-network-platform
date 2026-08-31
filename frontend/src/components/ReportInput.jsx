@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { Mic, Square, Send, Loader2, FileText } from 'lucide-react'
 import { submitTextReport, submitVoiceReport, transcribeAudio } from '../services/api'
 
-export default function ReportInput({ caseId, setCaseId, onIngested }) {
+export default function ReportInput({ onIngested }) {
   const [text, setText] = useState('')
   const [recording, setRecording] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -45,14 +45,18 @@ export default function ReportInput({ caseId, setCaseId, onIngested }) {
   }
 
   async function handleSubmit() {
-    if (!caseId.trim() || !text.trim()) {
-      setError('Case ID and report text are both required.')
+    if (!text.trim()) {
+      setError('Report text is required.')
       return
     }
+
     setBusy(true)
     setError(null)
+
     try {
-      const result = await submitTextReport(caseId.trim(), text.trim())
+      const generatedCaseId = `FIR-${Date.now()}`
+      const result = await submitTextReport(generatedCaseId, text.trim())
+
       onIngested(result)
       
     } catch (e) {
@@ -69,20 +73,12 @@ export default function ReportInput({ caseId, setCaseId, onIngested }) {
         <h2 className="text-sm font-semibold text-ink">New crime report</h2>
       </div>
 
-      <label className="block text-xs font-medium text-muted mb-1">Case / FIR number</label>
-      <input
-        value={caseId}
-        onChange={(e) => setCaseId(e.target.value)}
-        placeholder="e.g. FIR-2026-00417"
-        className="w-full mb-4 rounded-lg border border-line px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-400"
-      />
-
       <label className="block text-xs font-medium text-muted mb-1">Report narrative</label>
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="Type the report, or use the mic to dictate it..."
-        rows={6}
+        placeholder="Describe the incident, people, locations, transactions, calls, vehicles, or other evidence..."
+        rows={8}
         className="w-full rounded-lg border border-line px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400 resize-none"
       />
 

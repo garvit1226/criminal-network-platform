@@ -60,8 +60,9 @@ export default function App() {
   }
 
   async function handleIngested() {
-    await refreshGraph()
-  }
+  await refreshGraph()
+  await runScan()
+ }
 
   async function runScan() {
     setScanning(true)

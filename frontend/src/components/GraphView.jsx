@@ -24,6 +24,175 @@ const NODE_SIZES = {
   DATE: 44,
 }
 
+
+// ==========================================================
+// SMART INVESTIGATOR LAYOUT
+// People form the primary layer. Other entities are placed
+// near the people they connect to. Shared entities are placed
+// near the center of their connected people.
+// ==========================================================
+function createSmartPositions(nodes, edges) {
+  const positions = {}
+
+  const people = nodes.filter(
+    (node) => String(node.label || '').toUpperCase() === 'PERSON'
+  )
+
+  const entities = nodes.filter(
+    (node) => String(node.label || '').toUpperCase() !== 'PERSON'
+  )
+
+  const CENTER_X = 500
+  const CENTER_Y = 330
+  const PERSON_DISTANCE = 260
+
+  // ----------------------------------------------------------
+  // 1. PEOPLE FIRST
+  // ----------------------------------------------------------
+  if (people.length === 1) {
+    positions[String(people[0].id)] = {
+      x: CENTER_X,
+      y: CENTER_Y,
+    }
+  } else if (people.length > 1) {
+    people.forEach((person, index) => {
+      const angle =
+        (2 * Math.PI * index) / people.length - Math.PI / 2
+
+      positions[String(person.id)] = {
+        x: CENTER_X + PERSON_DISTANCE * Math.cos(angle),
+        y: CENTER_Y + PERSON_DISTANCE * Math.sin(angle),
+      }
+    })
+  }
+
+  // Helper: find people directly connected to a node.
+  const getConnectedPeople = (nodeId) => {
+    const peopleMap = new Map()
+
+    edges.forEach((edge) => {
+      const source = String(edge.source)
+      const target = String(edge.target)
+
+      let otherId = null
+
+      if (source === nodeId) {
+        otherId = target
+      } else if (target === nodeId) {
+        otherId = source
+      }
+
+      if (!otherId || !positions[otherId]) return
+
+      const otherNode = nodes.find(
+        (node) => String(node.id) === otherId
+      )
+
+      if (
+        otherNode &&
+        String(otherNode.label || '').toUpperCase() === 'PERSON'
+      ) {
+        peopleMap.set(otherId, positions[otherId])
+      }
+    })
+
+    return [...peopleMap.values()]
+  }
+
+  // Keep track of how many entities have been placed around
+  // each person so that several entities don't overlap.
+  const personEntityCount = new Map()
+
+  // ----------------------------------------------------------
+  // 2. NON-PERSON ENTITIES
+  // ----------------------------------------------------------
+  entities.forEach((entity) => {
+    const entityId = String(entity.id)
+    const connectedPeople = getConnectedPeople(entityId)
+
+    if (connectedPeople.length === 0) {
+      // Isolated entities go below the main network.
+      const column = entities.indexOf(entity) % 5
+      const row = Math.floor(entities.indexOf(entity) / 5)
+
+      positions[entityId] = {
+        x: 120 + column * 190,
+        y: 720 + row * 150,
+      }
+
+      return
+    }
+
+    // --------------------------------------------------------
+    // SHARED ENTITY:
+    // Connected to multiple people -> place at their center.
+    // --------------------------------------------------------
+    if (connectedPeople.length >= 2) {
+      const avgX =
+        connectedPeople.reduce((sum, point) => sum + point.x, 0) /
+        connectedPeople.length
+
+      const avgY =
+        connectedPeople.reduce((sum, point) => sum + point.y, 0) /
+        connectedPeople.length
+
+      // Small deterministic offset for multiple shared entities
+      // at exactly the same midpoint.
+      const sharedIndex = entities
+        .slice(0, entities.indexOf(entity))
+        .filter(
+          (item) => getConnectedPeople(String(item.id)).length >= 2
+        ).length
+
+      const offsetAngle = sharedIndex * 0.9
+      const offsetRadius = 45
+
+      positions[entityId] = {
+        x: avgX + offsetRadius * Math.cos(offsetAngle),
+        y: avgY + offsetRadius * Math.sin(offsetAngle),
+      }
+
+      return
+    }
+
+    // --------------------------------------------------------
+    // SINGLE-PERSON ENTITY:
+    // Place it around its person.
+    // --------------------------------------------------------
+    const personPosition = connectedPeople[0]
+
+    const connectedPerson = people.find(
+      (person) =>
+        positions[String(person.id)]?.x === personPosition.x &&
+        positions[String(person.id)]?.y === personPosition.y
+    )
+
+    const personId = connectedPerson
+      ? String(connectedPerson.id)
+      : null
+
+    const count = personId
+      ? personEntityCount.get(personId) || 0
+      : 0
+
+    if (personId) {
+      personEntityCount.set(personId, count + 1)
+    }
+
+    // Spread entities around the person in a ring.
+    const slotAngle = count * (Math.PI / 3) - Math.PI / 2
+    const ring =
+      125 + Math.floor(count / 6) * 65
+
+    positions[entityId] = {
+      x: personPosition.x + ring * Math.cos(slotAngle),
+      y: personPosition.y + ring * Math.sin(slotAngle),
+    }
+  })
+
+  return positions
+}
+
 export default function GraphView({
   graphData,
   onNodeSelect,
@@ -48,12 +217,18 @@ export default function GraphView({
     // ELEMENTS
     // ==========================================================
 
+    const positions = createSmartPositions(nodes, edges)
+
     const elements = [
       ...nodes.map((node) => ({
         data: {
           id: String(node.id),
           label: node.name || 'Unknown',
           kind: node.label || 'ENTITY',
+        },
+        position: positions[String(node.id)] || {
+          x: 500,
+          y: 330,
         },
       })),
 
@@ -291,34 +466,14 @@ export default function GraphView({
       // LAYOUT
       // ========================================================
 
+      // Use the positions calculated above.
+      // Do NOT use cose here: cose would pull the graph back
+      // into the clustered force-directed layout.
       layout: {
-        name: 'cose',
-
-        animate: false,
-
+        name: 'preset',
         fit: true,
-
         padding: 80,
-
-        nodeRepulsion: 9000,
-
-        idealEdgeLength: 150,
-
-        edgeElasticity: 0.25,
-
-        nestingFactor: 0.8,
-
-        gravity: 0.25,
-
-        numIter: 1000,
-
-        initialEnergyOnIncremental: 200,
-
-        randomize: true,
-
-        componentSpacing: 120,
-
-        nodeOverlap: 20,
+        animate: false,
       },
 
       wheelSensitivity: 0.18,
