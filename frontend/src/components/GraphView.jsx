@@ -1,192 +1,138 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import cytoscape from 'cytoscape'
-import { Network } from 'lucide-react'
+import { Network, ZoomIn, ZoomOut, Maximize2, Minimize2, RotateCcw, Filter, LayoutGrid, Sparkles, Shrink } from 'lucide-react'
 
 const LABEL_COLORS = {
-  PERSON: '#2563EB',
-  ORG: '#7C3AED',
-  LOCATION: '#059669',
-  PHONE: '#EA580C',
-  ACCOUNT: '#DB2777',
-  VEHICLE: '#0D9488',
-  AMOUNT: '#CA8A04',
-  DATE: '#64748B',
+  PERSON: '#2563EB',    // Vibrant Blue
+  ORG: '#7C3AED',       // Deep Purple
+  LOCATION: '#059669',  // Emerald Green
+  PHONE: '#EA580C',     // Bright Orange
+  ACCOUNT: '#DB2777',   // Magenta
+  VEHICLE: '#0D9488',   // Teal
+  AMOUNT: '#CA8A04',    // Golden Amber
+  DATE: '#64748B',      // Slate
 }
 
+// LARGE, HIGH-VISIBILITY NODE SIZES
 const NODE_SIZES = {
-  PERSON: 58,
-  ORG: 52,
-  LOCATION: 48,
-  PHONE: 44,
-  ACCOUNT: 44,
-  VEHICLE: 44,
-  AMOUNT: 44,
-  DATE: 44,
+  PERSON: 74,
+  ORG: 66,
+  LOCATION: 62,
+  PHONE: 58,
+  ACCOUNT: 58,
+  VEHICLE: 58,
+  AMOUNT: 58,
+  DATE: 58,
 }
 
-
 // ==========================================================
-// SMART INVESTIGATOR LAYOUT
-// People form the primary layer. Other entities are placed
-// near the people they connect to. Shared entities are placed
-// near the center of their connected people.
+// CALCULATE CLEAN INITIAL POSITIONS (Original Form)
 // ==========================================================
-function createSmartPositions(nodes, edges) {
+function calculateOriginalPositions(nodes, edges, width = 1200, height = 800) {
   const positions = {}
+  const people = nodes.filter((n) => String(n.label || '').toUpperCase() === 'PERSON')
+  const entities = nodes.filter((n) => String(n.label || '').toUpperCase() !== 'PERSON')
 
-  const people = nodes.filter(
-    (node) => String(node.label || '').toUpperCase() === 'PERSON'
-  )
+  const CENTER_X = width / 2
+  const CENTER_Y = height / 2 - 20
+  const PERSON_RADIUS = Math.max(200, Math.min(width, height) * 0.32)
 
-  const entities = nodes.filter(
-    (node) => String(node.label || '').toUpperCase() !== 'PERSON'
-  )
-
-  const CENTER_X = 500
-  const CENTER_Y = 330
-  const PERSON_DISTANCE = 260
-
-  // ----------------------------------------------------------
-  // 1. PEOPLE FIRST
-  // ----------------------------------------------------------
+  // 1. Arrange People in a clean center ring
   if (people.length === 1) {
-    positions[String(people[0].id)] = {
-      x: CENTER_X,
-      y: CENTER_Y,
-    }
+    positions[String(people[0].id)] = { x: CENTER_X, y: CENTER_Y }
   } else if (people.length > 1) {
     people.forEach((person, index) => {
-      const angle =
-        (2 * Math.PI * index) / people.length - Math.PI / 2
-
+      const angle = (2 * Math.PI * index) / people.length - Math.PI / 2
       positions[String(person.id)] = {
-        x: CENTER_X + PERSON_DISTANCE * Math.cos(angle),
-        y: CENTER_Y + PERSON_DISTANCE * Math.sin(angle),
+        x: CENTER_X + PERSON_RADIUS * Math.cos(angle),
+        y: CENTER_Y + PERSON_RADIUS * Math.sin(angle),
       }
     })
+  } else if (nodes.length > 0) {
+    // If no persons exist, distribute all nodes in a balanced ring
+    nodes.forEach((n, index) => {
+      const angle = (2 * Math.PI * index) / nodes.length - Math.PI / 2
+      positions[String(n.id)] = {
+        x: CENTER_X + (PERSON_RADIUS * 0.8) * Math.cos(angle),
+        y: CENTER_Y + (PERSON_RADIUS * 0.8) * Math.sin(angle),
+      }
+    })
+    return positions
   }
 
-  // Helper: find people directly connected to a node.
+  // Find people connected to each entity
   const getConnectedPeople = (nodeId) => {
     const peopleMap = new Map()
-
     edges.forEach((edge) => {
       const source = String(edge.source)
       const target = String(edge.target)
-
       let otherId = null
-
-      if (source === nodeId) {
-        otherId = target
-      } else if (target === nodeId) {
-        otherId = source
-      }
+      if (source === nodeId) otherId = target
+      else if (target === nodeId) otherId = source
 
       if (!otherId || !positions[otherId]) return
-
-      const otherNode = nodes.find(
-        (node) => String(node.id) === otherId
-      )
-
-      if (
-        otherNode &&
-        String(otherNode.label || '').toUpperCase() === 'PERSON'
-      ) {
+      const otherNode = nodes.find((node) => String(node.id) === otherId)
+      if (otherNode && String(otherNode.label || '').toUpperCase() === 'PERSON') {
         peopleMap.set(otherId, positions[otherId])
       }
     })
-
     return [...peopleMap.values()]
   }
 
-  // Keep track of how many entities have been placed around
-  // each person so that several entities don't overlap.
   const personEntityCount = new Map()
 
-  // ----------------------------------------------------------
-  // 2. NON-PERSON ENTITIES
-  // ----------------------------------------------------------
-  entities.forEach((entity) => {
+  // 2. Position entities relative to connected people with generous spacing
+  entities.forEach((entity, eIdx) => {
     const entityId = String(entity.id)
     const connectedPeople = getConnectedPeople(entityId)
 
     if (connectedPeople.length === 0) {
-      // Isolated entities go below the main network.
-      const column = entities.indexOf(entity) % 5
-      const row = Math.floor(entities.indexOf(entity) / 5)
-
+      // Isolated entity below
+      const column = eIdx % 7
+      const row = Math.floor(eIdx / 7)
       positions[entityId] = {
-        x: 120 + column * 190,
-        y: 720 + row * 150,
+        x: Math.max(100, CENTER_X - 350) + column * 135,
+        y: Math.min(height - 80, CENTER_Y + PERSON_RADIUS + 50) + row * 90,
       }
-
       return
     }
 
-    // --------------------------------------------------------
-    // SHARED ENTITY:
-    // Connected to multiple people -> place at their center.
-    // --------------------------------------------------------
     if (connectedPeople.length >= 2) {
-      const avgX =
-        connectedPeople.reduce((sum, point) => sum + point.x, 0) /
-        connectedPeople.length
+      // Shared entity: clean midpoint with radial spread
+      const avgX = connectedPeople.reduce((sum, p) => sum + p.x, 0) / connectedPeople.length
+      const avgY = connectedPeople.reduce((sum, p) => sum + p.y, 0) / connectedPeople.length
 
-      const avgY =
-        connectedPeople.reduce((sum, point) => sum + point.y, 0) /
-        connectedPeople.length
-
-      // Small deterministic offset for multiple shared entities
-      // at exactly the same midpoint.
       const sharedIndex = entities
-        .slice(0, entities.indexOf(entity))
-        .filter(
-          (item) => getConnectedPeople(String(item.id)).length >= 2
-        ).length
+        .slice(0, eIdx)
+        .filter((item) => getConnectedPeople(String(item.id)).length >= 2).length
 
-      const offsetAngle = sharedIndex * 0.9
-      const offsetRadius = 45
+      const offsetAngle = sharedIndex * 1.3
+      const offsetRadius = 65 + (sharedIndex % 3) * 35
 
       positions[entityId] = {
         x: avgX + offsetRadius * Math.cos(offsetAngle),
         y: avgY + offsetRadius * Math.sin(offsetAngle),
       }
-
       return
     }
 
-    // --------------------------------------------------------
-    // SINGLE-PERSON ENTITY:
-    // Place it around its person.
-    // --------------------------------------------------------
-    const personPosition = connectedPeople[0]
-
+    // Single-person satellite entity
+    const personPos = connectedPeople[0]
     const connectedPerson = people.find(
-      (person) =>
-        positions[String(person.id)]?.x === personPosition.x &&
-        positions[String(person.id)]?.y === personPosition.y
+      (p) => positions[String(p.id)]?.x === personPos.x && positions[String(p.id)]?.y === personPos.y
     )
 
-    const personId = connectedPerson
-      ? String(connectedPerson.id)
-      : null
+    const personId = connectedPerson ? String(connectedPerson.id) : null
+    const count = personId ? personEntityCount.get(personId) || 0 : 0
+    if (personId) personEntityCount.set(personId, count + 1)
 
-    const count = personId
-      ? personEntityCount.get(personId) || 0
-      : 0
-
-    if (personId) {
-      personEntityCount.set(personId, count + 1)
-    }
-
-    // Spread entities around the person in a ring.
-    const slotAngle = count * (Math.PI / 3) - Math.PI / 2
-    const ring =
-      125 + Math.floor(count / 6) * 65
+    // Satellite ring around the person
+    const slotAngle = count * (Math.PI / 3.2) - Math.PI / 2
+    const ring = 125 + Math.floor(count / 6) * 60
 
     positions[entityId] = {
-      x: personPosition.x + ring * Math.cos(slotAngle),
-      y: personPosition.y + ring * Math.sin(slotAngle),
+      x: personPos.x + ring * Math.cos(slotAngle),
+      y: personPos.y + ring * Math.sin(slotAngle),
     }
   })
 
@@ -197,44 +143,118 @@ export default function GraphView({
   graphData,
   onNodeSelect,
   selectedNodeId,
+  isFullScreen = false,
+  onToggleFullScreen,
 }) {
   const containerRef = useRef(null)
   const cyRef = useRef(null)
+  const initialPositionsRef = useRef({})
+  const [activeFilter, setActiveFilter] = useState('ALL')
+  const [activeLayout, setActiveLayout] = useState('cose')
+  const [isSpread, setIsSpread] = useState(false)
 
   const nodes = graphData?.nodes || []
   const edges = graphData?.edges || []
 
+  // Auto-resize canvas whenever container size or fullscreen changes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (cyRef.current) {
+        cyRef.current.resize()
+        if (!selectedNodeId) {
+          cyRef.current.fit(undefined, isFullScreen ? 60 : 45)
+        }
+      }
+    }, 100)
+    return () => clearTimeout(timer)
+  }, [isFullScreen, selectedNodeId])
+
+  // Helper to run chosen layout mode
+  const runLayout = (layoutMode, spreadActive) => {
+    if (!cyRef.current) return
+
+    if (layoutMode === 'breadthfirst') {
+      cyRef.current.layout({
+        name: 'breadthfirst',
+        animate: true,
+        animationDuration: 650,
+        fit: true,
+        padding: 50,
+        directed: false,
+        circle: false,
+        spacingFactor: spreadActive ? 2.4 : 1.4,
+        avoidOverlap: true,
+        roots: undefined,
+      }).run()
+      return
+    }
+
+    // Organic Physics (CoSE vs Original)
+    if (spreadActive) {
+      cyRef.current.layout({
+        name: 'cose',
+        animate: true,
+        animationDuration: 700,
+        fit: true,
+        padding: 50,
+        nodeRepulsion: (node) => (node.data('kind') === 'PERSON' ? 85000 : 52000),
+        nodeOverlap: 40,
+        idealEdgeLength: () => 180,
+        edgeElasticity: () => 32,
+        nestingFactor: 1.2,
+        gravity: 0.08,
+        numIter: 1000,
+        initialTemp: 800,
+        coolingFactor: 0.98,
+        minTemp: 1.0,
+        componentSpacing: 190,
+      }).run()
+    } else {
+      cyRef.current.layout({
+        name: 'preset',
+        positions: (node) => initialPositionsRef.current[node.id()] || node.position(),
+        animate: true,
+        animationDuration: 650,
+        fit: true,
+        padding: 50,
+        easing: 'ease-in-out-cubic',
+      }).run()
+    }
+  }
+
+  // Initialize and update Cytoscape instance
   useEffect(() => {
     if (!containerRef.current) return
 
-    // Destroy previous Cytoscape instance
     if (cyRef.current) {
       cyRef.current.destroy()
       cyRef.current = null
     }
 
-    // ==========================================================
-    // ELEMENTS
-    // ==========================================================
+    const rect = containerRef.current.getBoundingClientRect()
+    const containerWidth = rect.width > 0 ? rect.width : (isFullScreen ? window.innerWidth : 900)
+    const containerHeight = rect.height > 0 ? rect.height : (isFullScreen ? window.innerHeight : 650)
 
-    const positions = createSmartPositions(nodes, edges)
+    // Compute and snapshot the exact original positions
+    const origPositions = calculateOriginalPositions(nodes, edges, containerWidth, containerHeight)
+    initialPositionsRef.current = origPositions
+    setIsSpread(false)
 
     const elements = [
       ...nodes.map((node) => ({
         data: {
           id: String(node.id),
           label: node.name || 'Unknown',
-          kind: node.label || 'ENTITY',
+          kind: String(node.label || 'ENTITY').toUpperCase(),
         },
-        position: positions[String(node.id)] || {
-          x: 500,
-          y: 330,
+        position: origPositions[String(node.id)] || {
+          x: containerWidth / 2,
+          y: containerHeight / 2,
         },
       })),
-
       ...edges.map((edge, index) => ({
         data: {
-          id: String(edge.id || `edge-${index}`),
+          id: String(edge.id || `edge-${edge.source}-${edge.target}-${index}`),
           source: String(edge.source),
           target: String(edge.target),
           label: edge.type || 'RELATES',
@@ -242,467 +262,447 @@ export default function GraphView({
       })),
     ]
 
-    // ==========================================================
-    // CYTOSCAPE
-    // ==========================================================
-
     const cy = cytoscape({
       container: containerRef.current,
-
       elements,
-
       style: [
-
-        // ======================================================
-        // NODES
-        // ======================================================
-
+        // BASE NODE STYLE (BIGGER, CLEARER, READABLE)
         {
           selector: 'node',
-
           style: {
-            'background-color': (ele) =>
-              LABEL_COLORS[ele.data('kind')] || '#94A3B8',
-
-            width: (ele) =>
-              NODE_SIZES[ele.data('kind')] || 46,
-
-            height: (ele) =>
-              NODE_SIZES[ele.data('kind')] || 46,
-
+            'background-color': (ele) => LABEL_COLORS[ele.data('kind')] || '#94A3B8',
+            width: (ele) => NODE_SIZES[ele.data('kind')] || 56,
+            height: (ele) => NODE_SIZES[ele.data('kind')] || 56,
             label: 'data(label)',
-
             color: '#0F172A',
-
-            'font-family': 'Inter, Arial, sans-serif',
-
-            'font-size': 12,
-
+            'font-family': 'Inter, system-ui, -apple-system, sans-serif',
+            'font-size': 13,
             'font-weight': 600,
-
             'text-valign': 'bottom',
-
             'text-halign': 'center',
-
-            'text-margin-y': 9,
-
-            'text-max-width': 120,
-
-            'text-wrap': 'ellipsis',
-
-            'border-width': 3,
-
+            'text-margin-y': 8,
+            'text-max-width': 130,
+            'text-wrap': 'wrap',
+            // HIGH-CONTRAST BADGE PILL BACKGROUND FOR NAKED-EYE READABILITY
+            'text-background-color': '#FFFFFF',
+            'text-background-opacity': 0.96,
+            'text-background-padding': 4,
+            'text-background-shape': 'roundrectangle',
+            'text-border-width': 1,
+            'text-border-color': '#CBD5E1',
+            'text-border-opacity': 0.9,
+            // CRISP NODE BORDER & SHADOW
+            'border-width': 3.5,
             'border-color': '#FFFFFF',
-
+            'shadow-blur': 10,
+            'shadow-color': 'rgba(0,0,0,0.18)',
+            'shadow-offset-y': 3,
             'overlay-opacity': 0,
-
             'z-index': 10,
+            transition: 'all 0.25s ease',
           },
         },
-
-        // ======================================================
-        // PERSON
-        // ======================================================
-
+        // KEY SUSPECT / PERSON NODE (LARGER & BOLDER)
         {
           selector: 'node[kind="PERSON"]',
-
           style: {
-            'font-size': 13,
+            'font-size': 14.5,
             'font-weight': 700,
+            'border-width': 4.5,
+            'border-color': '#FFFFFF',
+            'text-border-color': '#93C5FD',
+            'text-background-color': '#F8FAFC',
           },
         },
-
-        // ======================================================
-        // NON-PERSON ENTITY LABEL
-        // ======================================================
-
-        {
-          selector:
-            'node[kind="PHONE"], node[kind="ACCOUNT"], node[kind="VEHICLE"], node[kind="AMOUNT"], node[kind="DATE"], node[kind="LOCATION"], node[kind="ORG"]',
-
-          style: {
-            'font-size': 11,
-            'font-weight': 600,
-          },
-        },
-
-        // ======================================================
-        // SELECTED NODE
-        // ======================================================
-
+        // SELECTED NODE HIGHLIGHT
         {
           selector: 'node:selected',
-
           style: {
             'border-width': 5,
-
-            'border-color': '#111827',
-
+            'border-color': '#0F172A',
             'overlay-color': '#2563EB',
-
-            'overlay-opacity': 0.15,
-
-            'overlay-padding': 10,
-
+            'overlay-opacity': 0.2,
+            'overlay-padding': 12,
             'z-index': 30,
           },
         },
-
-        // ======================================================
-        // NORMAL EDGES
-        // ======================================================
-
+        // ANOMALY FOCUS ALERT HIGHLIGHT
+        {
+          selector: 'node.anomaly-focused',
+          style: {
+            'border-width': 5.5,
+            'border-color': '#DC2626',
+            'overlay-color': '#EF4444',
+            'overlay-opacity': 0.28,
+            'overlay-padding': 14,
+            'z-index': 40,
+          },
+        },
+        // BASE EDGE STYLE
         {
           selector: 'edge',
-
           style: {
-            width: 2,
-
+            width: 2.5,
             'line-color': '#CBD5E1',
-
             'target-arrow-color': '#94A3B8',
-
             'target-arrow-shape': 'triangle',
-
+            'arrow-scale': 1.2,
             'curve-style': 'bezier',
-
-            // IMPORTANT:
-            // Don't display every label permanently.
-            // This is what keeps the graph readable.
-
+            'control-point-step-size': 40,
             label: '',
-
             'overlay-opacity': 0,
-
             'z-index': 1,
+            transition: 'line-color 0.2s ease, width 0.2s ease',
           },
         },
-
-        // ======================================================
-        // HOVER EDGE
-        // ======================================================
-
+        // HOVER EDGE (INSPECTOR LABEL)
         {
           selector: 'edge.edge-hover',
-
           style: {
-            width: 3,
-
-            'line-color': '#334155',
-
-            'target-arrow-color': '#334155',
-
+            width: 4,
+            'line-color': '#1E293B',
+            'target-arrow-color': '#1E293B',
             label: 'data(label)',
-
-            'font-family': 'Inter, Arial, sans-serif',
-
-            'font-size': 11,
-
+            'font-family': 'Inter, system-ui, sans-serif',
+            'font-size': 12,
             'font-weight': 700,
-
             color: '#0F172A',
-
             'text-rotation': 'autorotate',
-
             'text-background-color': '#FFFFFF',
-
-            'text-background-opacity': 1,
-
+            'text-background-opacity': 0.98,
             'text-background-padding': 5,
-
-            'text-border-width': 1,
-
+            'text-border-width': 1.5,
             'text-border-color': '#CBD5E1',
-
-            'z-index': 20,
+            'z-index': 25,
           },
         },
-
-        // ======================================================
         // ACTIVE EDGE
-        // ======================================================
-
         {
           selector: 'edge.active',
-
           style: {
-            width: 3,
-
-            'line-color': '#475569',
-
-            'target-arrow-color': '#475569',
-
+            width: 3.5,
+            'line-color': '#2563EB',
+            'target-arrow-color': '#2563EB',
             opacity: 1,
           },
         },
-
-        // ======================================================
-        // DIMMED NODE
-        // ======================================================
-
+        // DIMMED STATES FOR CLUSTER ISOLATION
         {
           selector: 'node.dimmed',
-
-          style: {
-            opacity: 0.18,
-          },
+          style: { opacity: 0.15 },
         },
-
-        // ======================================================
-        // DIMMED EDGE
-        // ======================================================
-
         {
           selector: 'edge.dimmed',
-
-          style: {
-            opacity: 0.1,
-          },
+          style: { opacity: 0.05 },
         },
       ],
-
-      // ========================================================
-      // LAYOUT
-      // ========================================================
-
-      // Use the positions calculated above.
-      // Do NOT use cose here: cose would pull the graph back
-      // into the clustered force-directed layout.
       layout: {
         name: 'preset',
         fit: true,
-        padding: 80,
+        padding: 50,
         animate: false,
       },
-
-      wheelSensitivity: 0.18,
-
-      minZoom: 0.35,
-
-      maxZoom: 2.5,
+      wheelSensitivity: 0.2,
+      minZoom: 0.2,
+      maxZoom: 3,
     })
 
-    // ==========================================================
-    // NODE CLICK
-    // ==========================================================
-
+    // Interactions
     cy.on('tap', 'node', (event) => {
       const node = event.target
-
       onNodeSelect?.(node.id())
-
-      cy.nodes().removeClass('dimmed')
-
+      cy.nodes().removeClass('dimmed anomaly-focused')
       cy.edges().removeClass('dimmed active')
 
       const neighborhood = node.closedNeighborhood()
-
       const connectedEdges = node.connectedEdges()
-
-      cy.nodes()
-        .not(neighborhood)
-        .addClass('dimmed')
-
+      cy.nodes().not(neighborhood).addClass('dimmed')
       connectedEdges.addClass('active')
     })
 
-    // ==========================================================
-    // EDGE HOVER
-    // ==========================================================
-
-    cy.on('mouseover', 'edge', (event) => {
-      event.target.addClass('edge-hover')
-    })
-
-    cy.on('mouseout', 'edge', (event) => {
-      event.target.removeClass('edge-hover')
-    })
-
-    // ==========================================================
-    // NODE HOVER
-    // ==========================================================
-
-    cy.on('mouseover', 'node', (event) => {
-      event.target
-        .connectedEdges()
-        .addClass('edge-hover')
-    })
-
-    cy.on('mouseout', 'node', (event) => {
-      event.target
-        .connectedEdges()
-        .removeClass('edge-hover')
-    })
-
-    // ==========================================================
-    // CLICK EMPTY SPACE
-    // ==========================================================
+    cy.on('mouseover', 'edge', (event) => event.target.addClass('edge-hover'))
+    cy.on('mouseout', 'edge', (event) => event.target.removeClass('edge-hover'))
+    cy.on('mouseover', 'node', (event) => event.target.connectedEdges().addClass('edge-hover'))
+    cy.on('mouseout', 'node', (event) => event.target.connectedEdges().removeClass('edge-hover'))
 
     cy.on('tap', (event) => {
       if (event.target === cy) {
-        cy.nodes().removeClass('dimmed')
-
-        cy.edges()
-          .removeClass('dimmed active')
-
+        cy.nodes().removeClass('dimmed anomaly-focused')
+        cy.edges().removeClass('dimmed active')
         onNodeSelect?.(null)
       }
     })
 
-    // ==========================================================
-    // SAVE INSTANCE
-    // ==========================================================
-
+    const handleResize = () => cyRef.current?.resize()
+    window.addEventListener('resize', handleResize)
     cyRef.current = cy
 
-    // ==========================================================
-    // CLEANUP
-    // ==========================================================
-
     return () => {
+      window.removeEventListener('resize', handleResize)
       cy.destroy()
       cyRef.current = null
     }
+  }, [graphData, onNodeSelect, isFullScreen])
 
-  }, [graphData, onNodeSelect])
-
-  // ============================================================
-  // SELECTED NODE
-  // ============================================================
-
+  // ==========================================================
+  // ROBUST ANOMALY FOCUS & ZOOM HANDLER
+  // Matches by ID, Label/Name, or array of involved entities
+  // ==========================================================
   useEffect(() => {
     if (!cyRef.current) return
-
     const cy = cyRef.current
 
     cy.nodes().unselect()
-
-    cy.nodes().removeClass('dimmed')
-
+    cy.nodes().removeClass('dimmed anomaly-focused')
     cy.edges().removeClass('dimmed active')
 
     if (!selectedNodeId) return
 
-    const node =
-      cy.getElementById(String(selectedNodeId))
+    let targetNodes = cy.collection()
+    const searchTargets = Array.isArray(selectedNodeId) ? selectedNodeId : [selectedNodeId]
 
-    if (!node || node.length === 0) return
+    searchTargets.forEach((target) => {
+      if (!target) return
+      const strTarget = String(target).trim()
 
-    node.select()
+      // 1. Try matching by exact ID
+      let matched = cy.getElementById(strTarget)
 
-    const neighborhood =
-      node.closedNeighborhood()
+      // 2. If not found by ID, search by node label/name
+      if (!matched || matched.length === 0) {
+        matched = cy.nodes().filter((n) => {
+          const lbl = String(n.data('label') || '').toLowerCase().trim()
+          return lbl === strTarget.toLowerCase() || lbl.includes(strTarget.toLowerCase())
+        })
+      }
 
-    const connectedEdges =
-      node.connectedEdges()
-
-    cy.nodes()
-      .not(neighborhood)
-      .addClass('dimmed')
-
-    connectedEdges.addClass('active')
-
-    cy.animate({
-      center: {
-        eles: node,
-      },
-
-      zoom: Math.min(
-        Math.max(cy.zoom(), 1),
-        1.6
-      ),
-
-      duration: 400,
+      if (matched && matched.length > 0) {
+        targetNodes = targetNodes.union(matched)
+      }
     })
 
+    // If target nodes found, highlight and animate camera
+    if (targetNodes.length > 0) {
+      targetNodes.select()
+      targetNodes.addClass('anomaly-focused')
+
+      const neighborhood = targetNodes.closedNeighborhood()
+      const connectedEdges = targetNodes.connectedEdges()
+
+      // Dim everything else to isolate anomaly cluster
+      cy.nodes().not(neighborhood).addClass('dimmed')
+      connectedEdges.addClass('active')
+
+      // Center and smoothly zoom camera onto the anomaly cluster
+      if (targetNodes.length === 1) {
+        cy.animate({
+          center: { eles: targetNodes },
+          zoom: 1.35,
+          duration: 500,
+          easing: 'ease-out-cubic',
+        })
+      } else {
+        cy.animate({
+          fit: {
+            eles: neighborhood,
+            padding: 70,
+          },
+          duration: 500,
+          easing: 'ease-out-cubic',
+        })
+      }
+    }
   }, [selectedNodeId])
 
-  // ============================================================
-  // UI
-  // ============================================================
+  // Filter Entity Types
+  useEffect(() => {
+    if (!cyRef.current) return
+    const cy = cyRef.current
+
+    if (activeFilter === 'ALL') {
+      cy.nodes().style('display', 'element')
+      cy.edges().style('display', 'element')
+    } else {
+      cy.nodes().forEach((n) => {
+        if (n.data('kind') === activeFilter || n.data('kind') === 'PERSON') {
+          n.style('display', 'element')
+        } else {
+          n.style('display', 'none')
+        }
+      })
+    }
+  }, [activeFilter])
+
+  // Toggle between Spread & Original
+  const handleToggleSpread = () => {
+    const nextSpread = !isSpread
+    setIsSpread(nextSpread)
+    runLayout(activeLayout, nextSpread)
+  }
+
+  // Handle Layout Mode Switch (Organic Physics vs Hierarchical Tree)
+  const handleLayoutChange = (newLayout) => {
+    setActiveLayout(newLayout)
+    runLayout(newLayout, isSpread)
+  }
+
+  // Full Reset to default view & clear selection
+  const handleFullReset = () => {
+    if (!cyRef.current) return
+    setIsSpread(false)
+    setActiveLayout('cose')
+    setActiveFilter('ALL')
+    onNodeSelect?.(null)
+    cyRef.current.nodes().removeClass('dimmed anomaly-focused').unselect()
+    cyRef.current.edges().removeClass('dimmed active')
+    runLayout('cose', false)
+  }
 
   return (
-    <div className="relative bg-panel rounded-xl border border-line shadow-card flex flex-col h-full">
+    <div className={`relative bg-white flex flex-col w-full h-full ${isFullScreen ? 'rounded-none' : 'rounded-xl border border-slate-200 shadow-sm overflow-hidden min-h-[580px]'}`}>
+      {/* HEADER CONTROLS */}
+      <div className="flex flex-wrap items-center justify-between px-5 py-3 border-b border-slate-200 bg-slate-50/90 gap-2 shrink-0">
+        <div className="flex items-center gap-2.5">
+          <div className="p-1.5 bg-blue-50 rounded-lg text-blue-600 border border-blue-100">
+            <Network size={18} />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+              Intelligence Network Graph
+              {nodes.length > 0 && (
+                <span className="text-[11px] font-medium text-slate-500 bg-white px-2 py-0.5 rounded-full border border-slate-200">
+                  {nodes.length} entities · {edges.length} links
+                </span>
+              )}
+            </h2>
+          </div>
+        </div>
 
-      {/* HEADER */}
-
-      <div className="flex items-center justify-between px-5 py-3 border-b border-line">
-
+        {/* TOOLBAR */}
         <div className="flex items-center gap-2">
+          {/* LAYOUT SELECTOR */}
+          <div className="flex items-center gap-1 bg-white px-2 py-1 rounded-lg border border-slate-200 text-xs">
+            <LayoutGrid size={12} className="text-slate-400" />
+            <select
+              value={activeLayout}
+              onChange={(e) => handleLayoutChange(e.target.value)}
+              className="bg-transparent text-xs font-medium text-slate-700 focus:outline-none cursor-pointer"
+              title="Select Layout Structure"
+            >
+              <option value="cose">Organic Physics</option>
+              <option value="breadthfirst">Hierarchical Tree</option>
+            </select>
+          </div>
 
-          <Network
-            size={16}
-            className="text-brand-600"
-          />
+          {/* FILTER DROPDOWN */}
+          <div className="flex items-center gap-1 bg-white px-2 py-1 rounded-lg border border-slate-200 text-xs">
+            <Filter size={12} className="text-slate-400" />
+            <select
+              value={activeFilter}
+              onChange={(e) => setActiveFilter(e.target.value)}
+              className="bg-transparent text-xs font-medium text-slate-700 focus:outline-none cursor-pointer"
+            >
+              <option value="ALL">All Types</option>
+              {Object.keys(LABEL_COLORS).map((k) => (
+                <option key={k} value={k}>{k}</option>
+              ))}
+            </select>
+          </div>
 
-          <h2 className="text-sm font-semibold text-ink">
-            Network graph
-          </h2>
+          <div className="h-4 w-[1px] bg-slate-200 mx-0.5" />
 
+          {/* SPREAD / RESET TO ORIGINAL FORM BUTTON */}
+          <button
+            onClick={handleToggleSpread}
+            title={isSpread ? 'Return nodes back to their exact original form' : 'Spread nodes out with high physics repulsion'}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold border transition cursor-pointer ${
+              isSpread
+                ? 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
+                : 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100'
+            }`}
+          >
+            {isSpread ? <Shrink size={13} /> : <Sparkles size={13} />}
+            <span>{isSpread ? 'Reset Spacing' : 'Spread Nodes'}</span>
+          </button>
+
+          {/* ZOOM & VIEW CONTROLS */}
+          <div className="flex items-center bg-white rounded-lg p-0.5 border border-slate-200">
+            <button
+              onClick={() => cyRef.current?.zoom(cyRef.current.zoom() * 1.25)}
+              title="Zoom In"
+              className="p-1 hover:bg-slate-100 rounded text-slate-600 transition cursor-pointer"
+            >
+              <ZoomIn size={14} />
+            </button>
+            <button
+              onClick={() => cyRef.current?.zoom(cyRef.current.zoom() * 0.8)}
+              title="Zoom Out"
+              className="p-1 hover:bg-slate-100 rounded text-slate-600 transition cursor-pointer"
+            >
+              <ZoomOut size={14} />
+            </button>
+            <button
+              onClick={() => cyRef.current?.fit(undefined, 50)}
+              title="Fit to Screen"
+              className="p-1 hover:bg-slate-100 rounded text-slate-600 transition cursor-pointer"
+            >
+              <Maximize2 size={14} />
+            </button>
+            <button
+              onClick={handleFullReset}
+              title="Reset View to Original Form"
+              className="p-1 hover:bg-slate-100 rounded text-slate-600 transition cursor-pointer"
+            >
+              <RotateCcw size={14} />
+            </button>
+          </div>
+
+          <div className="h-4 w-[1px] bg-slate-200 mx-0.5" />
+
+          {/* FULL SCREEN EXPAND / COLLAPSE BUTTON */}
+          <button
+            onClick={onToggleFullScreen}
+            title={isFullScreen ? 'Exit Fullscreen (Esc)' : 'Expand Graph to Full Screen (Covers Entire Window)'}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold border transition cursor-pointer ${
+              isFullScreen
+                ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700 shadow-sm'
+                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+            }`}
+          >
+            {isFullScreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+            <span>{isFullScreen ? 'Exit Fullscreen' : 'Full Screen'}</span>
+          </button>
         </div>
-
-        {/* LEGEND */}
-
-        <div className="flex items-center gap-3 text-[10px] text-muted flex-wrap">
-
-          {Object.entries(LABEL_COLORS).map(
-            ([label, color]) => (
-
-              <span
-                key={label}
-                className="flex items-center gap-1"
-              >
-
-                <span
-                  className="w-2.5 h-2.5 rounded-full"
-                  style={{
-                    backgroundColor: color,
-                  }}
-                />
-
-                {label}
-
-              </span>
-
-            )
-          )}
-
-        </div>
-
       </div>
 
-      {/* GRAPH */}
-
+      {/* GRAPH CANVAS */}
       <div
         ref={containerRef}
-        className="flex-1 min-h-[420px]"
+        style={{ width: '100%', height: '100%', flex: 1 }}
+        className="bg-slate-50/40 cursor-grab active:cursor-grabbing w-full h-full"
       />
 
-      {/* EMPTY */}
-
-      {nodes.length === 0 && (
-
-        <div className="absolute inset-0 flex items-center justify-center text-sm text-muted pointer-events-none">
-
-          Submit a report to see the network graph
-
+      {/* FOOTER & LEGEND */}
+      <div className="px-4 py-2.5 border-t border-slate-200 bg-white flex flex-wrap items-center justify-between text-[11px] gap-2 shrink-0">
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="font-semibold text-slate-400 text-[10px] uppercase">Legend:</span>
+          {Object.entries(LABEL_COLORS).map(([label, color]) => (
+            <span
+              key={label}
+              className="flex items-center gap-1 cursor-pointer hover:opacity-75"
+              onClick={() => setActiveFilter(activeFilter === label ? 'ALL' : label)}
+            >
+              <span className="w-3 h-3 rounded-full shadow-xs" style={{ backgroundColor: color }} />
+              <span className={`text-[11px] ${activeFilter === label ? 'font-bold text-slate-900' : 'text-slate-600'}`}>
+                {label}
+              </span>
+            </span>
+          ))}
         </div>
-
-      )}
-
-      {/* TIP */}
-
-      {nodes.length > 0 && (
-
-        <div className="absolute bottom-3 left-4 text-[10px] text-muted pointer-events-none">
-
-          Click an entity to focus its network • Hover a relationship to inspect it
-
+        <div className="text-[10px] text-slate-400">
+          {isFullScreen ? 'Full Window Mode Active (Press Esc to Exit)' : 'Click Full Screen for Full-Window Investigation'}
         </div>
-
-      )}
-
+      </div>
     </div>
   )
 }
