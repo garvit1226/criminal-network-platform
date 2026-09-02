@@ -5,7 +5,7 @@ import { Network, ZoomIn, ZoomOut, Maximize2, Minimize2, RotateCcw, Filter, Layo
 const LABEL_COLORS = {
   PERSON: '#2563EB',    // Vibrant Blue
   ORG: '#7C3AED',       // Deep Purple
-  LOCATION: '#059669',  // Emerald Green
+  LOCATION: '#800020',  // Burgundy
   PHONE: '#EA580C',     // Bright Orange
   ACCOUNT: '#DB2777',   // Magenta
   VEHICLE: '#0D9488',   // Teal
@@ -15,14 +15,14 @@ const LABEL_COLORS = {
 
 // LARGE, HIGH-VISIBILITY NODE SIZES
 const NODE_SIZES = {
-  PERSON: 74,
-  ORG: 66,
-  LOCATION: 62,
-  PHONE: 58,
-  ACCOUNT: 58,
-  VEHICLE: 58,
-  AMOUNT: 58,
-  DATE: 58,
+  PERSON: 75,
+  ORG: 60,
+  LOCATION: 60,
+  PHONE: 60,
+  ACCOUNT: 60,
+  VEHICLE: 60,
+  AMOUNT: 60,
+  DATE: 60,
 }
 
 // ==========================================================
@@ -30,110 +30,341 @@ const NODE_SIZES = {
 // ==========================================================
 function calculateOriginalPositions(nodes, edges, width = 1200, height = 800) {
   const positions = {}
-  const people = nodes.filter((n) => String(n.label || '').toUpperCase() === 'PERSON')
-  const entities = nodes.filter((n) => String(n.label || '').toUpperCase() !== 'PERSON')
 
-  const CENTER_X = width / 2
-  const CENTER_Y = height / 2 - 20
-  const PERSON_RADIUS = Math.max(200, Math.min(width, height) * 0.32)
+  const people = nodes.filter(
+    (node) => String(node.label || '').toUpperCase() === 'PERSON'
+  )
 
-  // 1. Arrange People in a clean center ring
+  const entities = nodes.filter(
+    (node) => String(node.label || '').toUpperCase() !== 'PERSON'
+  )
+
+  const CENTER_X = 600
+  const CENTER_Y = 330
+  const PERSON_DISTANCE_X = 430
+  const PERSON_DISTANCE_Y = 205
+
+  // ----------------------------------------------------------
+  // 1. PEOPLE FIRST
+  // People positions are NEVER changed by collision correction.
+  // ----------------------------------------------------------
   if (people.length === 1) {
-    positions[String(people[0].id)] = { x: CENTER_X, y: CENTER_Y }
+    positions[String(people[0].id)] = {
+      x: CENTER_X,
+      y: CENTER_Y,
+    }
   } else if (people.length > 1) {
     people.forEach((person, index) => {
-      const angle = (2 * Math.PI * index) / people.length - Math.PI / 2
+      const angle =
+        (2 * Math.PI * index) / people.length - Math.PI / 2
+
       positions[String(person.id)] = {
-        x: CENTER_X + PERSON_RADIUS * Math.cos(angle),
-        y: CENTER_Y + PERSON_RADIUS * Math.sin(angle),
+        x: CENTER_X + PERSON_DISTANCE_X * Math.cos(angle),
+        y: CENTER_Y + PERSON_DISTANCE_Y * Math.sin(angle),
       }
     })
-  } else if (nodes.length > 0) {
-    // If no persons exist, distribute all nodes in a balanced ring
-    nodes.forEach((n, index) => {
-      const angle = (2 * Math.PI * index) / nodes.length - Math.PI / 2
-      positions[String(n.id)] = {
-        x: CENTER_X + (PERSON_RADIUS * 0.8) * Math.cos(angle),
-        y: CENTER_Y + (PERSON_RADIUS * 0.8) * Math.sin(angle),
-      }
-    })
-    return positions
   }
 
-  // Find people connected to each entity
+  // ----------------------------------------------------------
+  // Helper: find people directly connected to a node.
+  // ----------------------------------------------------------
   const getConnectedPeople = (nodeId) => {
     const peopleMap = new Map()
+
     edges.forEach((edge) => {
       const source = String(edge.source)
       const target = String(edge.target)
+
       let otherId = null
-      if (source === nodeId) otherId = target
-      else if (target === nodeId) otherId = source
+
+      if (source === nodeId) {
+        otherId = target
+      } else if (target === nodeId) {
+        otherId = source
+      }
 
       if (!otherId || !positions[otherId]) return
-      const otherNode = nodes.find((node) => String(node.id) === otherId)
-      if (otherNode && String(otherNode.label || '').toUpperCase() === 'PERSON') {
+
+      const otherNode = nodes.find(
+        (node) => String(node.id) === otherId
+      )
+
+      if (
+        otherNode &&
+        String(otherNode.label || '').toUpperCase() === 'PERSON'
+      ) {
         peopleMap.set(otherId, positions[otherId])
       }
     })
+
     return [...peopleMap.values()]
   }
 
   const personEntityCount = new Map()
 
-  // 2. Position entities relative to connected people with generous spacing
-  entities.forEach((entity, eIdx) => {
+  // ----------------------------------------------------------
+  // COLLISION CORRECTION
+  //
+  // Only NON-PERSON nodes are moved.
+  // People positions remain untouched.
+  //
+  // If an entity is too close to an existing node, move it
+  // slightly outward until there is enough space.
+  // ----------------------------------------------------------
+  // ----------------------------------------------------------
+// COLLISION CORRECTION
+//
+// Checks BOTH:
+//   1. Node-to-node collision
+//   2. Node/label collision
+//
+// PERSON nodes are never moved.
+// Only NON-PERSON entities are shifted.
+// ----------------------------------------------------------
+const resolveEntityCollision = (entityId, originalPosition) => {
+  let x = originalPosition.x
+  let y = originalPosition.y
+
+  const entity = nodes.find(
+    (node) => String(node.id) === String(entityId)
+  )
+
+  if (!entity) return { x, y }
+
+  const entityKind = String(entity.label || '').toUpperCase()
+
+  // Node dimensions from NODE_SIZES above
+  const entitySize = NODE_SIZES[entityKind] || 56
+  const entityRadius = entitySize / 2
+
+  // Cytoscape label settings:
+  // text-max-width = 130
+  // text-margin-y = 8
+  const LABEL_WIDTH = 130
+  const LABEL_HEIGHT = 24
+  const LABEL_GAP = 8
+
+  // Extra breathing room between objects
+  const GAP = 12
+
+  // ----------------------------------------------------------
+  // Build the occupied rectangular area of a node + its label
+  // ----------------------------------------------------------
+  const getOccupiedBox = (node, pos) => {
+    const kind = String(node.label || '').toUpperCase()
+    const size = NODE_SIZES[kind] || 56
+    const radius = size / 2
+
+    // Node bounds
+    const nodeLeft = pos.x - radius
+    const nodeRight = pos.x + radius
+    const nodeTop = pos.y - radius
+    const nodeBottom = pos.y + radius
+
+    // Label is BELOW the node
+    const labelLeft = pos.x - LABEL_WIDTH / 2
+    const labelRight = pos.x + LABEL_WIDTH / 2
+    const labelTop = pos.y + radius + LABEL_GAP
+    const labelBottom = labelTop + LABEL_HEIGHT
+
+    return {
+      left: Math.min(nodeLeft, labelLeft),
+      right: Math.max(nodeRight, labelRight),
+      top: nodeTop,
+      bottom: Math.max(nodeBottom, labelBottom),
+    }
+  }
+
+  // ----------------------------------------------------------
+  // Check whether candidate position overlaps another node
+  // OR its label.
+  // ----------------------------------------------------------
+  const hasCollision = (candidateX, candidateY) => {
+    const candidateBox = getOccupiedBox(
+      entity,
+      { x: candidateX, y: candidateY }
+    )
+
+    for (const [otherId, otherPosition] of Object.entries(positions)) {
+      if (otherId === entityId) continue
+
+      const otherNode = nodes.find(
+        (node) => String(node.id) === String(otherId)
+      )
+
+      if (!otherNode) continue
+
+      const otherBox = getOccupiedBox(
+        otherNode,
+        otherPosition
+      )
+
+      // Add a small safety gap
+      if (
+        candidateBox.right + GAP > otherBox.left &&
+        candidateBox.left - GAP < otherBox.right &&
+        candidateBox.bottom + GAP > otherBox.top &&
+        candidateBox.top - GAP < otherBox.bottom
+      ) {
+        return true
+      }
+    }
+
+    return false
+  }
+
+  // ----------------------------------------------------------
+  // Try several directions until we find a clear position.
+  // The original position remains the preferred position.
+  // ----------------------------------------------------------
+  if (!hasCollision(x, y)) {
+    return { x, y }
+  }
+
+  const directions = [
+    { x: 1, y: 0 },     // right
+    { x: -1, y: 0 },    // left
+    { x: 0, y: 1 },     // down
+    { x: 0, y: -1 },    // up
+    { x: 1, y: 1 },     // bottom-right
+    { x: -1, y: 1 },    // bottom-left
+    { x: 1, y: -1 },    // top-right
+    { x: -1, y: -1 },   // top-left
+  ]
+
+  // Gradually increase distance from the original position
+  for (let distance = 25; distance <= 250; distance += 15) {
+    for (const direction of directions) {
+      const candidateX =
+        originalPosition.x + direction.x * distance
+
+      const candidateY =
+        originalPosition.y + direction.y * distance
+
+      if (!hasCollision(candidateX, candidateY)) {
+        return {
+          x: candidateX,
+          y: candidateY,
+        }
+      }
+    }
+  }
+
+  // Fallback if no completely clear position was found
+  return { x, y }
+}
+
+  // ----------------------------------------------------------
+  // 2. NON-PERSON ENTITIES
+  // ----------------------------------------------------------
+  entities.forEach((entity) => {
     const entityId = String(entity.id)
     const connectedPeople = getConnectedPeople(entityId)
 
+    let proposedPosition
+
+    // --------------------------------------------------------
+    // ISOLATED ENTITY
+    // --------------------------------------------------------
     if (connectedPeople.length === 0) {
-      // Isolated entity below
-      const column = eIdx % 7
-      const row = Math.floor(eIdx / 7)
-      positions[entityId] = {
-        x: Math.max(100, CENTER_X - 350) + column * 135,
-        y: Math.min(height - 80, CENTER_Y + PERSON_RADIUS + 50) + row * 90,
+      const column = entities.indexOf(entity) % 6
+      const row = Math.floor(entities.indexOf(entity) / 6)
+
+      proposedPosition = {
+        x: 120 + column * 190,
+        y: 585 + row * 90,
       }
+
+      positions[entityId] =
+        resolveEntityCollision(entityId, proposedPosition)
+
       return
     }
 
+    // --------------------------------------------------------
+    // SHARED ENTITY
+    // Connected to multiple people -> place at their center.
+    // --------------------------------------------------------
     if (connectedPeople.length >= 2) {
-      // Shared entity: clean midpoint with radial spread
-      const avgX = connectedPeople.reduce((sum, p) => sum + p.x, 0) / connectedPeople.length
-      const avgY = connectedPeople.reduce((sum, p) => sum + p.y, 0) / connectedPeople.length
+      const avgX =
+        connectedPeople.reduce(
+          (sum, point) => sum + point.x,
+          0
+        ) / connectedPeople.length
+
+      const avgY =
+        connectedPeople.reduce(
+          (sum, point) => sum + point.y,
+          0
+        ) / connectedPeople.length
 
       const sharedIndex = entities
-        .slice(0, eIdx)
-        .filter((item) => getConnectedPeople(String(item.id)).length >= 2).length
+        .slice(0, entities.indexOf(entity))
+        .filter(
+          (item) =>
+            getConnectedPeople(String(item.id)).length >= 2
+        ).length
 
-      const offsetAngle = sharedIndex * 1.3
-      const offsetRadius = 65 + (sharedIndex % 3) * 35
+      const offsetAngle = sharedIndex * 0.9
+      const offsetRadius = 82
 
-      positions[entityId] = {
+      proposedPosition = {
         x: avgX + offsetRadius * Math.cos(offsetAngle),
         y: avgY + offsetRadius * Math.sin(offsetAngle),
       }
+
+      positions[entityId] =
+        resolveEntityCollision(entityId, proposedPosition)
+
       return
     }
 
-    // Single-person satellite entity
-    const personPos = connectedPeople[0]
+    // --------------------------------------------------------
+    // SINGLE-PERSON ENTITY
+    // Place it around its connected person.
+    // --------------------------------------------------------
+    const personPosition = connectedPeople[0]
+
     const connectedPerson = people.find(
-      (p) => positions[String(p.id)]?.x === personPos.x && positions[String(p.id)]?.y === personPos.y
+      (person) =>
+        positions[String(person.id)]?.x === personPosition.x &&
+        positions[String(person.id)]?.y === personPosition.y
     )
 
-    const personId = connectedPerson ? String(connectedPerson.id) : null
-    const count = personId ? personEntityCount.get(personId) || 0 : 0
-    if (personId) personEntityCount.set(personId, count + 1)
+    const personId = connectedPerson
+      ? String(connectedPerson.id)
+      : null
 
-    // Satellite ring around the person
-    const slotAngle = count * (Math.PI / 3.2) - Math.PI / 2
-    const ring = 125 + Math.floor(count / 6) * 60
+    const count = personId
+      ? personEntityCount.get(personId) || 0
+      : 0
 
-    positions[entityId] = {
-      x: personPos.x + ring * Math.cos(slotAngle),
-      y: personPos.y + ring * Math.sin(slotAngle),
+    if (personId) {
+      personEntityCount.set(personId, count + 1)
     }
+
+    const slotAngle =
+      count * (Math.PI / 3) - Math.PI / 2
+
+    const ring =
+      145 + Math.floor(count / 6) * 75
+
+    const ringX = ring * 1.30
+    const ringY = ring * 0.88
+
+    proposedPosition = {
+      x:
+        personPosition.x +
+        ringX * Math.cos(slotAngle),
+
+      y:
+        personPosition.y +
+        ringY * Math.sin(slotAngle),
+    }
+
+    // Only the entity is shifted if it collides.
+    positions[entityId] =
+      resolveEntityCollision(entityId, proposedPosition)
   })
 
   return positions
@@ -542,8 +773,67 @@ export default function GraphView({
 
   // Handle Layout Mode Switch (Organic Physics vs Hierarchical Tree)
   const handleLayoutChange = (newLayout) => {
+    if (!cyRef.current) return
+
     setActiveLayout(newLayout)
-    runLayout(newLayout, isSpread)
+
+    // ==============================
+    // HIERARCHICAL TREE
+    // ==============================
+    if (newLayout === 'breadthfirst') {
+      setIsSpread(false)
+
+      runLayout('breadthfirst', false)
+      return
+    }
+
+    // ==============================
+    // ORGANIC PHYSICS
+    // ==============================
+    if (newLayout === 'cose') {
+      const cy = cyRef.current
+
+      setIsSpread(false)
+
+      // Get current graph/container dimensions
+      const width = cy.width()
+      const height = cy.height()
+
+      // Recalculate the ORIGINAL smart positions
+      const newOriginalPositions = calculateOriginalPositions(
+        nodes,
+        edges,
+        width,
+        height
+      )
+
+      // Save the newly calculated positions
+      initialPositionsRef.current = newOriginalPositions
+
+      // Apply those positions directly
+      cy.nodes().forEach((node) => {
+        const position = newOriginalPositions[node.id()]
+
+        if (position) {
+          node.position({
+            x: position.x,
+            y: position.y,
+          })
+        }
+      })
+
+      // Fit graph nicely inside the canvas
+      cy.animate({
+        fit: {
+          eles: cy.elements(),
+          padding: 50,
+        },
+        duration: 650,
+        easing: 'ease-in-out-cubic',
+      })
+
+      return
+    }
   }
 
   // Full Reset to default view & clear selection
