@@ -1,5 +1,5 @@
 """
-Graph service for CaseWeb.
+Graph service for vigilnode.
 
 Stores extracted entities and relationships in Neo4j and returns
 both connected AND standalone entities to the frontend.
