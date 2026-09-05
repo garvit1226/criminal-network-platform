@@ -1,5 +1,5 @@
 """
-Entity and relationship extraction for CaseWeb.
+Entity and relationship extraction for vigilnode.
 
 This version deliberately uses deterministic rules for the prototype:
 - spaCy helps with PERSON / ORG / LOCATION / DATE.

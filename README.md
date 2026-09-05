@@ -1,4 +1,4 @@
-# CaseWeb — Criminal Network Analysis Platform
+# vigilnode — Criminal Network Analysis Platform
 
 An investigator dashboard that turns typed or spoken crime reports into an
 explorable relationship graph, and continuously scans that graph for

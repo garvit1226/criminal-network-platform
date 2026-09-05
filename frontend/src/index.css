@@ -7,15 +7,23 @@ html, body, #root {
 }
 
 body {
-  @apply bg-canvas text-ink antialiased;
+  @apply text-slate-800 antialiased;
+  background-color: #F8FAFC;
 }
 
+/* High-tech model subtle dot matrix background */
+.bg-tech-grid {
+  background-image: radial-gradient(rgba(148, 163, 184, 0.22) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* Smooth custom scrollbars */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-thumb {
-  @apply bg-slate-300 rounded-full;
+  @apply bg-slate-300/80 hover:bg-slate-400 rounded-full transition-colors;
 }
 ::-webkit-scrollbar-track {
   background: transparent;

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import cytoscape from 'cytoscape'
-import { Network, ZoomIn, ZoomOut, Maximize2, Minimize2, RotateCcw, Filter, LayoutGrid, Sparkles, Shrink } from 'lucide-react'
+import { Network, ZoomIn, ZoomOut, Maximize2, Minimize2, RotateCcw, Filter, LayoutGrid } from 'lucide-react'
 
 const LABEL_COLORS = {
   PERSON: '#2563EB',    // Vibrant Blue
@@ -382,10 +382,12 @@ export default function GraphView({
   const initialPositionsRef = useRef({})
   const [activeFilter, setActiveFilter] = useState('ALL')
   const [activeLayout, setActiveLayout] = useState('cose')
-  const [isSpread, setIsSpread] = useState(false)
 
   const nodes = graphData?.nodes || []
   const edges = graphData?.edges || []
+  const personCount = nodes.filter(
+    (n) => String(n.label || '').toUpperCase() === 'PERSON'
+  ).length
 
   // Auto-resize canvas whenever container size or fullscreen changes
   useEffect(() => {
@@ -401,7 +403,7 @@ export default function GraphView({
   }, [isFullScreen, selectedNodeId])
 
   // Helper to run chosen layout mode
-  const runLayout = (layoutMode, spreadActive) => {
+  const runLayout = (layoutMode) => {
     if (!cyRef.current) return
 
     if (layoutMode === 'breadthfirst') {
@@ -413,44 +415,23 @@ export default function GraphView({
         padding: 50,
         directed: false,
         circle: false,
-        spacingFactor: spreadActive ? 2.4 : 1.4,
+        spacingFactor: 1.4,
         avoidOverlap: true,
         roots: undefined,
       }).run()
       return
     }
 
-    // Organic Physics (CoSE vs Original)
-    if (spreadActive) {
-      cyRef.current.layout({
-        name: 'cose',
-        animate: true,
-        animationDuration: 700,
-        fit: true,
-        padding: 50,
-        nodeRepulsion: (node) => (node.data('kind') === 'PERSON' ? 85000 : 52000),
-        nodeOverlap: 40,
-        idealEdgeLength: () => 180,
-        edgeElasticity: () => 32,
-        nestingFactor: 1.2,
-        gravity: 0.08,
-        numIter: 1000,
-        initialTemp: 800,
-        coolingFactor: 0.98,
-        minTemp: 1.0,
-        componentSpacing: 190,
-      }).run()
-    } else {
-      cyRef.current.layout({
-        name: 'preset',
-        positions: (node) => initialPositionsRef.current[node.id()] || node.position(),
-        animate: true,
-        animationDuration: 650,
-        fit: true,
-        padding: 50,
-        easing: 'ease-in-out-cubic',
-      }).run()
-    }
+    // Organic Physics / Preset Layout
+    cyRef.current.layout({
+      name: 'preset',
+      positions: (node) => initialPositionsRef.current[node.id()] || node.position(),
+      animate: true,
+      animationDuration: 650,
+      fit: true,
+      padding: 50,
+      easing: 'ease-in-out-cubic',
+    }).run()
   }
 
   // Initialize and update Cytoscape instance
@@ -469,7 +450,6 @@ export default function GraphView({
     // Compute and snapshot the exact original positions
     const origPositions = calculateOriginalPositions(nodes, edges, containerWidth, containerHeight)
     initialPositionsRef.current = origPositions
-    setIsSpread(false)
 
     const elements = [
       ...nodes.map((node) => ({
@@ -764,13 +744,6 @@ export default function GraphView({
     }
   }, [activeFilter])
 
-  // Toggle between Spread & Original
-  const handleToggleSpread = () => {
-    const nextSpread = !isSpread
-    setIsSpread(nextSpread)
-    runLayout(activeLayout, nextSpread)
-  }
-
   // Handle Layout Mode Switch (Organic Physics vs Hierarchical Tree)
   const handleLayoutChange = (newLayout) => {
     if (!cyRef.current) return
@@ -781,9 +754,7 @@ export default function GraphView({
     // HIERARCHICAL TREE
     // ==============================
     if (newLayout === 'breadthfirst') {
-      setIsSpread(false)
-
-      runLayout('breadthfirst', false)
+      runLayout('breadthfirst')
       return
     }
 
@@ -792,8 +763,6 @@ export default function GraphView({
     // ==============================
     if (newLayout === 'cose') {
       const cy = cyRef.current
-
-      setIsSpread(false)
 
       // Get current graph/container dimensions
       const width = cy.width()
@@ -839,44 +808,66 @@ export default function GraphView({
   // Full Reset to default view & clear selection
   const handleFullReset = () => {
     if (!cyRef.current) return
-    setIsSpread(false)
     setActiveLayout('cose')
     setActiveFilter('ALL')
     onNodeSelect?.(null)
     cyRef.current.nodes().removeClass('dimmed anomaly-focused').unselect()
     cyRef.current.edges().removeClass('dimmed active')
-    runLayout('cose', false)
+    runLayout('cose')
   }
 
   return (
-    <div className={`relative bg-white flex flex-col w-full h-full ${isFullScreen ? 'rounded-none' : 'rounded-xl border border-slate-200 shadow-sm overflow-hidden min-h-[580px]'}`}>
+    <div
+      className={`relative flex flex-col w-full h-full transition-all duration-300 ease-out ${
+        isFullScreen
+          ? 'rounded-none border-none shadow-none bg-[#F1F5F9]'
+          : 'group rounded-2xl border border-slate-300/80 bg-[#F1F5F9] shadow-[0_4px_20px_-4px_rgba(0,0,0,0.06)] overflow-hidden min-h-[580px] hover:border-indigo-500 hover:shadow-[0_14px_38px_-6px_rgba(99,102,241,0.22)] hover:-translate-y-0.5'
+      }`}
+    >
+      {/* Top Accent Gradient Line (Shown when not fullscreen) */}
+      {!isFullScreen && (
+        <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-violet-500 via-indigo-500 to-cyan-400 opacity-80 group-hover:opacity-100 transition-opacity z-10" />
+      )}
+
       {/* HEADER CONTROLS */}
-      <div className="flex flex-wrap items-center justify-between px-5 py-3 border-b border-slate-200 bg-slate-50/90 gap-2 shrink-0">
+      <div className="flex flex-wrap items-center justify-between px-5 py-3 border-b border-slate-200/90 bg-slate-200/40 gap-2 shrink-0">
         <div className="flex items-center gap-2.5">
-          <div className="p-1.5 bg-blue-50 rounded-lg text-blue-600 border border-blue-100">
+          <div className="p-2 bg-gradient-to-br from-indigo-50 to-violet-50/80 rounded-xl text-indigo-600 border border-indigo-200/60 shadow-xs group-hover:scale-105 transition-transform">
             <Network size={18} />
           </div>
           <div>
-            <h2 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-              Intelligence Network Graph
-              {nodes.length > 0 && (
-                <span className="text-[11px] font-medium text-slate-500 bg-white px-2 py-0.5 rounded-full border border-slate-200">
-                  {nodes.length} entities · {edges.length} links
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-bold text-slate-900 tracking-tight">
+                Intelligence Network Graph
+              </h2>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-2.5 py-0.5 rounded-full border border-blue-200/80 shadow-xs flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+                  <span className="font-extrabold">{personCount}</span> {personCount === 1 ? 'Person' : 'Persons'}
                 </span>
-              )}
-            </h2>
+                <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 px-2.5 py-0.5 rounded-full border border-indigo-200/80 shadow-xs flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
+                  <span className="font-extrabold">{nodes.length}</span> Entities
+                </span>
+                <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200/80 shadow-xs flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                  <span className="font-extrabold">{edges.length}</span> Relations
+                </span>
+              </div>
+            </div>
+
           </div>
         </div>
 
         {/* TOOLBAR */}
         <div className="flex items-center gap-2">
           {/* LAYOUT SELECTOR */}
-          <div className="flex items-center gap-1 bg-white px-2 py-1 rounded-lg border border-slate-200 text-xs">
-            <LayoutGrid size={12} className="text-slate-400" />
+          <div className="flex items-center gap-1.5 bg-white px-2.5 py-1.5 rounded-xl border border-slate-200 shadow-xs text-xs">
+            <LayoutGrid size={13} className="text-indigo-500" />
             <select
               value={activeLayout}
               onChange={(e) => handleLayoutChange(e.target.value)}
-              className="bg-transparent text-xs font-medium text-slate-700 focus:outline-none cursor-pointer"
+              className="bg-transparent text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer"
               title="Select Layout Structure"
             >
               <option value="cose">Organic Physics</option>
@@ -885,12 +876,12 @@ export default function GraphView({
           </div>
 
           {/* FILTER DROPDOWN */}
-          <div className="flex items-center gap-1 bg-white px-2 py-1 rounded-lg border border-slate-200 text-xs">
-            <Filter size={12} className="text-slate-400" />
+          <div className="flex items-center gap-1.5 bg-white px-2.5 py-1.5 rounded-xl border border-slate-200 shadow-xs text-xs">
+            <Filter size={13} className="text-indigo-500" />
             <select
               value={activeFilter}
               onChange={(e) => setActiveFilter(e.target.value)}
-              className="bg-transparent text-xs font-medium text-slate-700 focus:outline-none cursor-pointer"
+              className="bg-transparent text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer"
             >
               <option value="ALL">All Types</option>
               {Object.keys(LABEL_COLORS).map((k) => (
@@ -899,64 +890,50 @@ export default function GraphView({
             </select>
           </div>
 
-          <div className="h-4 w-[1px] bg-slate-200 mx-0.5" />
 
-          {/* SPREAD / RESET TO ORIGINAL FORM BUTTON */}
-          <button
-            onClick={handleToggleSpread}
-            title={isSpread ? 'Return nodes back to their exact original form' : 'Spread nodes out with high physics repulsion'}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold border transition cursor-pointer ${
-              isSpread
-                ? 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
-                : 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100'
-            }`}
-          >
-            {isSpread ? <Shrink size={13} /> : <Sparkles size={13} />}
-            <span>{isSpread ? 'Reset Spacing' : 'Spread Nodes'}</span>
-          </button>
 
           {/* ZOOM & VIEW CONTROLS */}
-          <div className="flex items-center bg-white rounded-lg p-0.5 border border-slate-200">
+          <div className="flex items-center bg-white rounded-xl p-0.5 border border-slate-200 shadow-xs">
             <button
               onClick={() => cyRef.current?.zoom(cyRef.current.zoom() * 1.25)}
               title="Zoom In"
-              className="p-1 hover:bg-slate-100 rounded text-slate-600 transition cursor-pointer"
+              className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-600 transition cursor-pointer"
             >
               <ZoomIn size={14} />
             </button>
             <button
               onClick={() => cyRef.current?.zoom(cyRef.current.zoom() * 0.8)}
               title="Zoom Out"
-              className="p-1 hover:bg-slate-100 rounded text-slate-600 transition cursor-pointer"
+              className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-600 transition cursor-pointer"
             >
               <ZoomOut size={14} />
             </button>
             <button
               onClick={() => cyRef.current?.fit(undefined, 50)}
               title="Fit to Screen"
-              className="p-1 hover:bg-slate-100 rounded text-slate-600 transition cursor-pointer"
+              className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-600 transition cursor-pointer"
             >
               <Maximize2 size={14} />
             </button>
             <button
               onClick={handleFullReset}
               title="Reset View to Original Form"
-              className="p-1 hover:bg-slate-100 rounded text-slate-600 transition cursor-pointer"
+              className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-600 transition cursor-pointer"
             >
               <RotateCcw size={14} />
             </button>
           </div>
 
-          <div className="h-4 w-[1px] bg-slate-200 mx-0.5" />
+          <div className="h-5 w-[1px] bg-slate-200 mx-0.5" />
 
           {/* FULL SCREEN EXPAND / COLLAPSE BUTTON */}
           <button
             onClick={onToggleFullScreen}
             title={isFullScreen ? 'Exit Fullscreen (Esc)' : 'Expand Graph to Full Screen (Covers Entire Window)'}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold border transition cursor-pointer ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all active:scale-95 cursor-pointer shadow-xs ${
               isFullScreen
-                ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700 shadow-sm'
-                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white border-blue-600 hover:from-blue-700 hover:to-indigo-700 shadow-sm'
+                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
             }`}
           >
             {isFullScreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
@@ -965,32 +942,53 @@ export default function GraphView({
         </div>
       </div>
 
-      {/* GRAPH CANVAS */}
-      <div
-        ref={containerRef}
-        style={{ width: '100%', height: '100%', flex: 1 }}
-        className="bg-slate-50/40 cursor-grab active:cursor-grabbing w-full h-full"
-      />
+      {/* GRAPH CANVAS WITH EMPTY STATE OVERLAY */}
+      <div className="relative w-full h-full flex-1 overflow-hidden">
+        <div
+          ref={containerRef}
+          style={{ width: '100%', height: '100%' }}
+          className="bg-slate-50/30 cursor-grab active:cursor-grabbing w-full h-full"
+        />
+
+        {/* EMPTY STATE: Shown until a report is submitted */}
+        {nodes.length === 0 && (
+          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-slate-100/80 backdrop-blur-[2px] p-6 text-center select-none">
+            <div className="w-16 h-16 rounded-3xl bg-white border border-slate-200/90 shadow-md flex items-center justify-center text-indigo-500 mb-4">
+              <Network size={32} className="stroke-[1.75]" />
+            </div>
+            <h3 className="text-base font-bold text-slate-800 tracking-tight mb-1">
+              Awaiting Incident Report
+            </h3>
+            <p className="text-xs text-slate-500 max-w-md leading-relaxed">
+              No criminal network active yet. Submit an FIR or incident report narrative in the left panel to extract entities, analyze relationships, and generate the intelligence network graph.
+            </p>
+          </div>
+        )}
+      </div>
 
       {/* FOOTER & LEGEND */}
-      <div className="px-4 py-2.5 border-t border-slate-200 bg-white flex flex-wrap items-center justify-between text-[11px] gap-2 shrink-0">
+      <div className="px-5 py-2.5 border-t border-slate-200/90 bg-slate-100/90 flex flex-wrap items-center justify-between text-[11px] gap-2 shrink-0">
         <div className="flex items-center gap-3 flex-wrap">
-          <span className="font-semibold text-slate-400 text-[10px] uppercase">Legend:</span>
+          <span className="font-extrabold text-slate-400 text-[10px] tracking-wider uppercase">Entity Legend:</span>
           {Object.entries(LABEL_COLORS).map(([label, color]) => (
             <span
               key={label}
-              className="flex items-center gap-1 cursor-pointer hover:opacity-75"
+              className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer transition-all ${
+                activeFilter === label
+                  ? 'bg-slate-100 shadow-xs ring-1 ring-slate-300'
+                  : 'hover:bg-slate-50'
+              }`}
               onClick={() => setActiveFilter(activeFilter === label ? 'ALL' : label)}
             >
-              <span className="w-3 h-3 rounded-full shadow-xs" style={{ backgroundColor: color }} />
-              <span className={`text-[11px] ${activeFilter === label ? 'font-bold text-slate-900' : 'text-slate-600'}`}>
+              <span className="w-2.5 h-2.5 rounded-full shadow-xs" style={{ backgroundColor: color }} />
+              <span className={`text-[11px] ${activeFilter === label ? 'font-bold text-slate-900' : 'font-medium text-slate-600'}`}>
                 {label}
               </span>
             </span>
           ))}
         </div>
-        <div className="text-[10px] text-slate-400">
-          {isFullScreen ? 'Full Window Mode Active (Press Esc to Exit)' : 'Click Full Screen for Full-Window Investigation'}
+        <div className="text-[10.5px] font-medium text-slate-400">
+          {isFullScreen ? 'Full Window Mode Active (Press Esc to Exit)' : 'Click Full Screen for Expanded Investigation'}
         </div>
       </div>
     </div>
