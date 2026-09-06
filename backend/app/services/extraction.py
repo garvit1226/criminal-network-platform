@@ -1,5 +1,5 @@
 """
-Entity and relationship extraction for vigilnode.
+Entity and relationship extraction for CaseWeb.
 
 This version deliberately uses deterministic rules for the prototype:
 - spaCy helps with PERSON / ORG / LOCATION / DATE.
@@ -7,6 +7,7 @@ This version deliberately uses deterministic rules for the prototype:
 - Strong entity-type rules prevent false PERSON/ORG duplicates.
 - Relationships are extracted between the actual entities mentioned in each sentence.
 """
+
 
 import re
 import uuid
@@ -47,7 +48,11 @@ DATE_RE = re.compile(
 )
 
 PERSON_NAME_RE = re.compile(
-    r"\b[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})+\b"
+    r"\b(?:"
+    r"(?:[A-Z]\.){1,4}\s*[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})*"
+    r"|"
+    r"[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){1,3}"
+    r")\b"
 )
 
 PERSON_TITLES = {
@@ -56,23 +61,114 @@ PERSON_TITLES = {
     "si", "shri", "smt"
 }
 
+PERSON_HINTS = {
+    "person", "man", "woman", "accused", "suspect", "defendant",
+    "witness", "victim", "arrested", "detained", "director",
+    "manager", "employee", "owner", "founder", "president",
+    "associate", "accomplice", "brother", "sister", "son",
+    "daughter", "father", "mother", "husband", "wife", "resident"
+}
+
+# Words that must never be treated as part of a PERSON name.
+NON_PERSON_WORDS = {
+    "transferred", "transfer", "sent", "paid", "gave", "deposited",
+    "called", "phoned", "contacted", "spoke", "met", "meeting",
+    "worked", "works", "employed", "travelled", "traveled",
+    "travelling", "traveling", "used", "uses",
+    "vehicle", "car", "account", "phone", "mobile", "number",
+    "amount", "money", "cash", "payment", "paid",
+    "rs", "inr", "rupees", "lakh", "lakhs", "crore", "crores",
+    "city", "state", "country", "district", "road", "street"
+}
+
 LOCATION_HINTS = {
     "place", "road", "street", "nagar", "colony", "market", "station",
-    "airport", "court", "park", "square", "district", "city"
+    "airport", "court", "park", "square", "district", "city",
+    "state", "country", "town", "village", "region", "province",
+    "area", "locality", "territory", "capital", "border"
+}
+
+KNOWN_LOCATIONS = {
+    "delhi", "new delhi", "mumbai", "bengaluru", "bangalore",
+    "hyderabad", "chennai", "kolkata", "pune", "jaipur", "lucknow",
+    "noida", "gurugram", "ghaziabad", "chandigarh", "ahmedabad",
+    "surat", "kanpur", "agra", "indore", "bhopal", "nagpur",
+    "varanasi", "meerut", "amritsar", "patna", "ranchi", "kochi",
+    "coimbatore", "mysuru", "mysore",
+    "andhra pradesh", "arunachal pradesh", "assam", "bihar",
+    "chhattisgarh", "goa", "gujarat", "haryana", "himachal pradesh",
+    "jharkhand", "karnataka", "kerala", "madhya pradesh",
+    "maharashtra", "manipur", "meghalaya", "mizoram", "nagaland",
+    "odisha", "punjab", "rajasthan", "sikkim", "tamil nadu",
+    "telangana", "tripura", "uttar pradesh", "uttarakhand",
+    "west bengal", "jammu and kashmir", "ladakh",
+    "india", "nepal", "bangladesh", "pakistan", "united states",
+    "usa", "united kingdom", "uk", "uae", "china", "singapore",
+    "canada", "australia"
+}
+
+HOTEL_HINTS = {
+    "hotel", "motel", "resort", "inn", "lodge", "guest house",
+    "guesthouse", "hostel", "homestay", "stayed at", "stayed in",
+    "booked at", "booked a room at", "checked into", "checked in at",
+    "checked out of", "hotel room", "room at", "suite at"
 }
 
 ORG_SUFFIXES = {
     "logistics", "ltd", "limited", "pvt", "private", "inc", "corp",
     "corporation", "company", "industries", "exports", "bank", "agency",
-    "solutions", "enterprises", "services"
+    "solutions", "enterprises", "services", "organization", "organisation",
+    "foundation", "institute", "university", "college", "hospital",
+    "laboratory", "lab", "ministry", "department", "bureau",
+    "authority", "association", "group", "firm", "trust", "clinic",
+    "technologies", "technology"
+}
+
+ACCOUNT_HINTS = {
+    "account", "bank account", "a/c", "account number",
+    "bank account number", "savings account", "current account",
+    "account holder", "bank details", "account details"
+}
+
+PHONE_HINTS = {
+    "phone", "telephone", "mobile", "cell", "phone number",
+    "mobile number", "telephone number", "called", "phoned",
+    "contacted", "dialled", "dialed", "received a call",
+    "made a call", "texted", "messaged"
 }
 
 VEHICLE_MODELS = {
     "toyota innova", "innova", "swift", "baleno", "fortuner", "creta",
-    "city", "verna", "scorpio", "thar", "nexon", "seltos"
+    "verna", "scorpio", "thar", "nexon", "seltos", "honda city"
 }
 
-CURRENCY_WORDS = {"rs", "inr", "rupees"}
+# Individual model/brand words that spaCy may wrongly classify as PERSON.
+# They are suppressed when they appear in a vehicle-related context.
+VEHICLE_NAME_PARTS = {
+    "toyota", "innova", "swift", "baleno", "fortuner", "creta",
+    "verna", "scorpio", "thar", "nexon", "seltos", "honda"
+}
+
+# Vehicle makes should not become ORG when they occur as part of a vehicle name,
+# e.g. "Toyota" in "Toyota Innova".
+VEHICLE_MAKES = {
+    "toyota", "honda", "maruti", "suzuki", "hyundai", "tata",
+    "mahindra", "ford", "volkswagen", "skoda", "kia", "mg",
+    "bmw", "audi", "mercedes", "volvo", "renault", "nissan"
+}
+
+VEHICLE_HINTS = {
+    "vehicle", "car", "van", "truck", "bus", "motorcycle", "bike",
+    "suv", "taxi", "auto", "rickshaw", "registration number",
+    "vehicle number", "number plate", "license plate", "drove",
+    "driving", "parked", "transported", "travelled by", "traveled by"
+}
+
+CURRENCY_WORDS = {
+    "rs", "inr", "rupees", "₹", "usd", "dollars", "$", "eur",
+    "euros", "gbp", "pounds", "lakh", "lakhs", "crore", "crores",
+    "amount", "sum", "cash", "money", "funds"
+}
 
 MONTHS = {
     "january", "february", "march", "april", "may", "june", "july",
@@ -83,7 +179,7 @@ MONTHS = {
 RELATION_TRIGGERS = {
     "TRANSFERRED_MONEY": ("transferred", "transfer", "sent", "paid", "gave", "deposited"),
     "CALLED": ("called", "phoned", "spoke to", "contacted"),
-    "MET_AT": ("met", "meeting", "seen together", "meets"),
+    "MET_AT": ("met", "meeting", "seen together", "meets", "lives"),
     "OWNS": ("owns", "owner of", "possesses"),
     "WORKS_AT": ("works at", "employed at", "works for"),
     "KNOWS": ("knows", "associate of", "friend of", "relative of"),
@@ -145,6 +241,38 @@ def _span_overlaps(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
 
 
 # ============================================================
+# ENTITY TYPE HELPERS
+# ============================================================
+
+def _candidate_context(text: str, start: int, end: int, radius: int = 60) -> str:
+    return text[max(0, start - radius):min(len(text), end + radius)]
+
+
+def _looks_like_org(candidate: str, context: str) -> bool:
+    # Only the candidate itself is used for suffix checks.
+    # Distant context can incorrectly turn nearby person names into ORG.
+    words = set(candidate.lower().split())
+    return any(word in ORG_SUFFIXES for word in words)
+def _known_location_entities(text: str) -> list[Entity]:
+    found = []
+    occupied = []
+    for place in sorted(KNOWN_LOCATIONS, key=len, reverse=True):
+        pattern = re.compile(rf"\b{re.escape(place)}\b", re.I)
+        for match in pattern.finditer(text):
+            if any(_span_overlaps(match.start(), match.end(), a, b) for a, b in occupied):
+                continue
+            occupied.append((match.start(), match.end()))
+            found.append(
+                Entity(
+                    id=_new_id("location"),
+                    label="LOCATION",
+                    name=match.group().strip(),
+                )
+            )
+    return found
+
+
+# ============================================================
 # ENTITY EXTRACTION
 # ============================================================
 
@@ -172,7 +300,10 @@ def _regex_entities(text: str) -> list[Entity]:
             )
         )
 
-    # Specific patterns first.
+    # Strong deterministic location patterns first.
+    found.extend(_known_location_entities(text))
+
+    # Specific numeric patterns.
     for m in PHONE_RE.finditer(text):
         add_match(m, "PHONE")
 
@@ -195,15 +326,8 @@ def _regex_entities(text: str) -> list[Entity]:
         for m in pattern.finditer(text):
             left = text[max(0, m.start() - 35):m.start()].lower()
             right = text[m.end():m.end() + 35].lower()
-            if (
-                "vehicle" in left
-                or "vehicle" in right
-                or "car" in left
-                or "car" in right
-                or "travel" in left
-                or "travelled" in left
-                or "travelling" in left
-            ):
+            context = left + " " + right
+            if any(term in context for term in VEHICLE_HINTS):
                 add_match(m, "VEHICLE", m.group().title())
 
     # Person fallback is intentionally conservative. A capitalized phrase is
@@ -217,15 +341,37 @@ def _regex_entities(text: str) -> list[Entity]:
             continue
         if any(word in MONTHS for word in words):
             continue
-        if any(word in LOCATION_HINTS for word in words):
-            continue
-        if any(word in ORG_SUFFIXES for word in words):
-            continue
-        if lower in {v.lower() for v in VEHICLE_MODELS}:
+
+        context = _candidate_context(text, m.start(), m.end())
+
+        # Never classify known places, vehicle names, or organization-like
+        # candidates as PERSON.
+        if lower in KNOWN_LOCATIONS:
             continue
 
-        # If this span overlaps a known vehicle/date/amount/phone/account,
-        # never classify it as PERSON.
+        candidate_words = set(lower.split())
+        if candidate_words & NON_PERSON_WORDS:
+            continue
+
+        if lower in {v.lower() for v in VEHICLE_MODELS}:
+            continue
+        if candidate_words & VEHICLE_NAME_PARTS and any(
+            term in context.lower() for term in VEHICLE_HINTS
+        ):
+            continue
+
+        if _looks_like_org(name, context):
+            continue
+
+        # Reject long action/transaction phrases accidentally matched
+        # by the generic capitalized-name regex.
+        if len(words) > 3 and any(
+            word in NON_PERSON_WORDS for word in words
+        ):
+            continue
+
+        # If this span overlaps a known deterministic entity, never classify
+        # it as PERSON.
         if any(_span_overlaps(m.start(), m.end(), a, b) for a, b in occupied):
             continue
 
@@ -243,31 +389,84 @@ def _regex_entities(text: str) -> list[Entity]:
 def _spacy_entities(doc) -> list[Entity]:
     found: list[Entity] = []
 
+    vehicle_models_lower = {v.lower() for v in VEHICLE_MODELS}
+    vehicle_parts_lower = {v.lower() for v in VEHICLE_NAME_PARTS}
+    vehicle_makes_lower = {v.lower() for v in VEHICLE_MAKES}
+
     for ent in doc.ents:
-        label = {
-            "PERSON": "PERSON",
-            "GPE": "LOCATION",
-            "LOC": "LOCATION",
-            "FAC": "LOCATION",
-            "ORG": "ORG",
-            "DATE": "DATE",
-            "MONEY": "AMOUNT",
-        }.get(ent.label_)
+        name = ent.text.strip()
+        lower = name.lower()
+        context = _candidate_context(doc.text, ent.start_char, ent.end_char).lower()
+
+        # Known city/state/country names always remain LOCATION.
+        if lower in KNOWN_LOCATIONS:
+            label = "LOCATION"
+
+        # Suppress a vehicle make/model when it appears as part of a vehicle
+        # expression such as "Toyota Innova" or "Honda City".
+        elif (
+            lower in vehicle_models_lower
+            or (
+                lower in vehicle_makes_lower
+                and (
+                    any(model in context for model in vehicle_parts_lower)
+                    or any(term in context for term in VEHICLE_HINTS)
+                )
+            )
+            or (
+                lower in vehicle_parts_lower
+                and any(term in context for term in VEHICLE_HINTS)
+            )
+        ):
+            # Regex extraction creates the actual VEHICLE entity.
+            label = None
+
+        else:
+            label = {
+                "PERSON": "PERSON",
+                "GPE": "LOCATION",
+                "LOC": "LOCATION",
+                "FAC": "LOCATION",
+                "ORG": "ORG",
+                "DATE": "DATE",
+                "MONEY": "AMOUNT",
+            }.get(ent.label_)
 
         if not label:
             continue
 
-        name = ent.text.strip()
-
-        # Never let spaCy's ORG/PERSON classification override strong
-        # deterministic patterns.
         if label == "PERSON":
             name = _clean_person_name(name)
-        elif label == "ORG":
-            lower = name.lower()
-            if lower in VEHICLE_MODELS:
+            person_words = set(name.lower().split())
+
+            # Prevent transaction/action/currency words from becoming PERSON.
+            if person_words & NON_PERSON_WORDS:
                 continue
-            if any(month in lower.split() for month in MONTHS):
+
+            if name.lower() in KNOWN_LOCATIONS:
+                continue
+
+            if name.lower() in vehicle_models_lower:
+                continue
+
+            if person_words & vehicle_parts_lower and any(
+                term in context for term in VEHICLE_HINTS
+            ):
+                continue
+
+        if label == "ORG":
+            # Never allow a vehicle make/model to survive as an organization
+            # when it is being used as a vehicle name.
+            if lower in vehicle_models_lower:
+                continue
+
+            if (
+                lower in vehicle_makes_lower
+                and (
+                    any(model in context for model in vehicle_parts_lower)
+                    or any(term in context for term in VEHICLE_HINTS)
+                )
+            ):
                 continue
 
         found.append(
@@ -281,91 +480,85 @@ def _spacy_entities(doc) -> list[Entity]:
     return found
 
 
+
 def _canonicalize_entities(
     spacy_entities: list[Entity],
     regex_entities: list[Entity],
 ) -> list[Entity]:
     """
-    Merge same-name entities across labels using deterministic priority.
+    Merge same-name entities while protecting deterministic entity types.
 
-    PERSON is preferred over ORG for a matching two-word human name.
-    PHONE/ACCOUNT/VEHICLE/AMOUNT/DATE are always preferred over generic NER.
+    HOTEL/PARK/COURT/etc. are not entity types in this prototype.
+    Geographical names, vehicle names and numeric entities are protected
+    from being overwritten by generic PERSON/ORG predictions.
     """
     candidates = spacy_entities + regex_entities
-
-    # Strong exact names first.
-    strong: dict[str, Entity] = {}
-    for entity in candidates:
-        if entity.label in {"PHONE", "ACCOUNT", "VEHICLE", "AMOUNT", "DATE"}:
-            key = _normalize_name(entity.label, entity.name).lower()
-            if key:
-                strong[key] = entity
-
-    # Candidate buckets by normalized surface text.
     buckets: dict[str, list[Entity]] = {}
+
     for entity in candidates:
         key = _norm_space(entity.name).lower()
         if key:
             buckets.setdefault(key, []).append(entity)
 
     priority = {
-        "PHONE": 100,
-        "ACCOUNT": 95,
-        "VEHICLE": 90,
-        "AMOUNT": 85,
-        "DATE": 80,
+        "PHONE": 120,
+        "ACCOUNT": 115,
+        "VEHICLE": 110,
+        "AMOUNT": 105,
+        "DATE": 100,
+        "LOCATION": 95,
+        "ORG": 85,
         "PERSON": 70,
-        "LOCATION": 60,
-        "ORG": 50,
     }
 
     result: list[Entity] = []
 
-    for _, bucket in buckets.items():
-        # If any exact strong entity has the same surface text, prefer it.
+    for key, bucket in buckets.items():
+        labels = {e.label for e in bucket}
         chosen = max(bucket, key=lambda e: priority.get(e.label, 0))
 
-        # Normalize.
-        chosen.name = _normalize_name(chosen.label, chosen.name)
-
-        # If the same surface text was classified PERSON and ORG, PERSON wins.
-        # This fixes cases such as "Sameer Khan" -> ORG + PERSON.
-        labels = {e.label for e in bucket}
-        if "PERSON" in labels and "ORG" in labels:
-            person = next(e for e in bucket if e.label == "PERSON")
-            chosen = person
-            chosen.name = _normalize_name("PERSON", chosen.name)
-
-        # Known place phrases should never be PERSON.
-        lower = chosen.name.lower()
-        if chosen.label == "PERSON" and any(h in lower.split() for h in LOCATION_HINTS):
+        # Known locations always win over PERSON/ORG.
+        if key in KNOWN_LOCATIONS:
             location = next((e for e in bucket if e.label == "LOCATION"), None)
             if location:
                 chosen = location
-                chosen.name = _normalize_name("LOCATION", chosen.name)
 
-        # Company suffixes should never be PERSON.
-        if chosen.label == "PERSON" and any(w in lower.split() for w in ORG_SUFFIXES):
-            org = next((e for e in bucket if e.label == "ORG"), None)
-            if org:
-                chosen = org
-                chosen.name = _normalize_name("ORG", chosen.name)
+        # Known vehicle models/parts must never be PERSON.
+        elif key in {v.lower() for v in VEHICLE_MODELS}:
+            vehicle = next((e for e in bucket if e.label == "VEHICLE"), None)
+            if vehicle:
+                chosen = vehicle
+            elif "PERSON" in labels:
+                # Drop the generic PERSON prediction. Regex will supply
+                # VEHICLE when the surrounding sentence identifies a vehicle.
+                continue
 
+        # If PERSON and ORG share exactly the same surface form, only prefer
+        # ORG when the candidate contains an actual organization suffix.
+        elif "PERSON" in labels and "ORG" in labels:
+            if any(word in ORG_SUFFIXES for word in key.split()):
+                chosen = next(e for e in bucket if e.label == "ORG")
+            else:
+                chosen = next(e for e in bucket if e.label == "PERSON")
+
+        chosen.name = _normalize_name(chosen.label, chosen.name)
         result.append(chosen)
 
-    # Final dedupe by (label, normalized name).
     final: list[Entity] = []
     seen: set[tuple[str, str]] = set()
 
     for entity in result:
         entity.name = _normalize_name(entity.label, entity.name)
         key = (entity.label, entity.name.lower())
+
         if not entity.name or key in seen:
             continue
+
         seen.add(key)
         final.append(entity)
 
     return final
+
 
 
 # ============================================================
@@ -542,7 +735,7 @@ def _extract_relationships(
         # --------------------------------------------------------
 
         if people and phones and any(
-            t in lower for t in ("used", "phone", "number", "called", "contacted")
+            t in lower for t in PHONE_HINTS
         ):
             for phone in phones:
                 relationships.append(
@@ -556,7 +749,7 @@ def _extract_relationships(
         # --------------------------------------------------------
 
         if people and accounts and any(
-            t in lower for t in ("used", "bank account", "account", "a/c")
+            t in lower for t in ACCOUNT_HINTS
         ):
             for account in accounts:
                 relationships.append(
@@ -592,7 +785,7 @@ def _extract_relationships(
             actor = people[0] if people else last_person
             if actor and any(
                 t in lower
-                for t in ("used", "vehicle", "car", "travel", "travelled", "payment")
+                for t in VEHICLE_HINTS
             ):
                 for vehicle in vehicles:
                     relationships.append(
@@ -683,3 +876,4 @@ def extract(case_id: str, text: str) -> ExtractionResult:
         entities=entities,
         relationships=unique,
     )
+

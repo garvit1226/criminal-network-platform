@@ -14,360 +14,496 @@ const LABEL_COLORS = {
 }
 
 // LARGE, HIGH-VISIBILITY NODE SIZES
+// PERSON nodes are plain circles, just bigger than everything else.
+// Every other entity kind is a fixed 36px circle.
+const PERSON_NODE_HEIGHT = 42
+const ENTITY_NODE_SIZE = 36
+
 const NODE_SIZES = {
-  PERSON: 75,
-  ORG: 60,
-  LOCATION: 60,
-  PHONE: 60,
-  ACCOUNT: 60,
-  VEHICLE: 60,
-  AMOUNT: 60,
-  DATE: 60,
+  PERSON: PERSON_NODE_HEIGHT,
+  ORG: ENTITY_NODE_SIZE,
+  LOCATION: ENTITY_NODE_SIZE,
+  PHONE: ENTITY_NODE_SIZE,
+  ACCOUNT: ENTITY_NODE_SIZE,
+  VEHICLE: ENTITY_NODE_SIZE,
+  AMOUNT: ENTITY_NODE_SIZE,
+  DATE: ENTITY_NODE_SIZE,
 }
 
 // ==========================================================
-// CALCULATE CLEAN INITIAL POSITIONS (Original Form)
+// COLLISION-SAFE GRAPH LAYOUT
+//
+// STEP 1 — PERSON nodes are placed evenly around the rim of an
+// OVAL (ellipse) that fills the graph window, so the ring of
+// suspects/witnesses forms the visual backbone of the graph.
+//
+// STEP 2 — every other entity is then placed near its connected
+// PERSON node(s): pushed outward along that person's own spot on
+// the oval if it belongs to one person, or at the midpoint if it
+// belongs to several. Unconnected entities fall into a row below.
+//
+// The whole thing is calculated in a larger virtual coordinate
+// space than the visible canvas; Cytoscape fits that space into
+// the graph window afterwards, so nothing gets squeezed back
+// together to make room.
 // ==========================================================
-function calculateOriginalPositions(nodes, edges, width = 1200, height = 800) {
+function calculateOriginalPositions(nodes, edges, width = 1200, height = 780) {
   const positions = {}
 
+  if (!nodes.length) return positions
+
+  const kindOf = (node) =>
+    String(node?.label || 'ENTITY').toUpperCase()
+
   const people = nodes.filter(
-    (node) => String(node.label || '').toUpperCase() === 'PERSON'
+    (node) => kindOf(node) === 'PERSON'
   )
 
   const entities = nodes.filter(
-    (node) => String(node.label || '').toUpperCase() !== 'PERSON'
+    (node) => kindOf(node) !== 'PERSON'
   )
 
-  const CENTER_X = 600
-  const CENTER_Y = 330
-  const PERSON_DISTANCE_X = 430
-  const PERSON_DISTANCE_Y = 205
+  // ---------------------------------------------------------
+  // SAFETY MARGINS
+  // ---------------------------------------------------------
 
-  // ----------------------------------------------------------
-  // 1. PEOPLE FIRST
-  // People positions are NEVER changed by collision correction.
-  // ----------------------------------------------------------
-  if (people.length === 1) {
-    positions[String(people[0].id)] = {
-      x: CENTER_X,
-      y: CENTER_Y,
-    }
-  } else if (people.length > 1) {
-    people.forEach((person, index) => {
-      const angle =
-        (2 * Math.PI * index) / people.length - Math.PI / 2
+  const marginX = 110
+  const marginY = 95
 
-      positions[String(person.id)] = {
-        x: CENTER_X + PERSON_DISTANCE_X * Math.cos(angle),
-        y: CENTER_Y + PERSON_DISTANCE_Y * Math.sin(angle),
-      }
-    })
-  }
+  // ---------------------------------------------------------
+  // FIND PERSON CONNECTIONS
+  // ---------------------------------------------------------
 
-  // ----------------------------------------------------------
-  // Helper: find people directly connected to a node.
-  // ----------------------------------------------------------
-  const getConnectedPeople = (nodeId) => {
-    const peopleMap = new Map()
+  const getConnectedPeople = (entityId) => {
+    const result = []
 
     edges.forEach((edge) => {
       const source = String(edge.source)
       const target = String(edge.target)
 
-      let otherId = null
+      let other = null
 
-      if (source === nodeId) {
-        otherId = target
-      } else if (target === nodeId) {
-        otherId = source
+      if (source === entityId) {
+        other = target
+      } else if (target === entityId) {
+        other = source
       }
 
-      if (!otherId || !positions[otherId]) return
+      if (!other) return
 
-      const otherNode = nodes.find(
-        (node) => String(node.id) === otherId
+      const node = nodes.find(
+        (n) => String(n.id) === other
       )
 
-      if (
-        otherNode &&
-        String(otherNode.label || '').toUpperCase() === 'PERSON'
-      ) {
-        peopleMap.set(otherId, positions[otherId])
+      if (node && kindOf(node) === 'PERSON') {
+        result.push(other)
       }
     })
 
-    return [...peopleMap.values()]
+    return [...new Set(result)]
   }
 
-  const personEntityCount = new Map()
+  // ---------------------------------------------------------
+  // 1. PERSON NODES — evenly spaced around an OVAL ring
+  // ---------------------------------------------------------
 
-  // ----------------------------------------------------------
-  // COLLISION CORRECTION
-  //
-  // Only NON-PERSON nodes are moved.
-  // People positions remain untouched.
-  //
-  // If an entity is too close to an existing node, move it
-  // slightly outward until there is enough space.
-  // ----------------------------------------------------------
-  // ----------------------------------------------------------
-// COLLISION CORRECTION
-//
-// Checks BOTH:
-//   1. Node-to-node collision
-//   2. Node/label collision
-//
-// PERSON nodes are never moved.
-// Only NON-PERSON entities are shifted.
-// ----------------------------------------------------------
-const resolveEntityCollision = (entityId, originalPosition) => {
-  let x = originalPosition.x
-  let y = originalPosition.y
+  const n = people.length
 
-  const entity = nodes.find(
-    (node) => String(node.id) === String(entityId)
-  )
+  // Minimum centre-to-centre distance between two adjacent people
+  // on the ring. Generous enough for the 42px circle PLUS its name
+  // label underneath PLUS the entities that will fan out from it —
+  // but no more than that, so the graph doesn't balloon in size.
+  const MIN_PERSON_SPACING = 170
 
-  if (!entity) return { x, y }
+  let ovalRadiusX = 0
+  let ovalRadiusY = 0
 
-  const entityKind = String(entity.label || '').toUpperCase()
+  if (n > 1) {
+    // Radius of a plain circle of n evenly-spaced points whose
+    // adjacent chord length is at least MIN_PERSON_SPACING.
+    const baseRadius = MIN_PERSON_SPACING / (2 * Math.sin(Math.PI / n))
 
-  // Node dimensions from NODE_SIZES above
-  const entitySize = NODE_SIZES[entityKind] || 56
-  const entityRadius = entitySize / 2
-
-  // Cytoscape label settings:
-  // text-max-width = 130
-  // text-margin-y = 8
-  const LABEL_WIDTH = 130
-  const LABEL_HEIGHT = 24
-  const LABEL_GAP = 8
-
-  // Extra breathing room between objects
-  const GAP = 12
-
-  // ----------------------------------------------------------
-  // Build the occupied rectangular area of a node + its label
-  // ----------------------------------------------------------
-  const getOccupiedBox = (node, pos) => {
-    const kind = String(node.label || '').toUpperCase()
-    const size = NODE_SIZES[kind] || 56
-    const radius = size / 2
-
-    // Node bounds
-    const nodeLeft = pos.x - radius
-    const nodeRight = pos.x + radius
-    const nodeTop = pos.y - radius
-    const nodeBottom = pos.y + radius
-
-    // Label is BELOW the node
-    const labelLeft = pos.x - LABEL_WIDTH / 2
-    const labelRight = pos.x + LABEL_WIDTH / 2
-    const labelTop = pos.y + radius + LABEL_GAP
-    const labelBottom = labelTop + LABEL_HEIGHT
-
-    return {
-      left: Math.min(nodeLeft, labelLeft),
-      right: Math.max(nodeRight, labelRight),
-      top: nodeTop,
-      bottom: Math.max(nodeBottom, labelBottom),
-    }
+    // Stretch that circle into a landscape OVAL (wider than tall)
+    // to suit a typical rectangular graph window — a mild stretch,
+    // not an exaggerated one.
+    ovalRadiusX = Math.max(baseRadius * 1.15, (width - marginX * 2) / 2)
+    ovalRadiusY = Math.max(baseRadius * 0.72, (height - marginY * 2) / 2)
   }
 
-  // ----------------------------------------------------------
-  // Check whether candidate position overlaps another node
-  // OR its label.
-  // ----------------------------------------------------------
-  const hasCollision = (candidateX, candidateY) => {
-    const candidateBox = getOccupiedBox(
-      entity,
-      { x: candidateX, y: candidateY }
-    )
+  const W = n > 1
+    ? ovalRadiusX * 2 + marginX * 2
+    : Math.max(width, 700)
 
-    for (const [otherId, otherPosition] of Object.entries(positions)) {
-      if (otherId === entityId) continue
+  const H = n > 1
+    ? ovalRadiusY * 2 + marginY * 2
+    : Math.max(height, 500)
 
-      const otherNode = nodes.find(
-        (node) => String(node.id) === String(otherId)
-      )
+  const ovalCenterX = W / 2
+  const ovalCenterY = H / 2
 
-      if (!otherNode) continue
+  if (n === 1) {
+    positions[String(people[0].id)] = { x: ovalCenterX, y: ovalCenterY }
+  } else if (n > 1) {
+    people.forEach((person, index) => {
+      // Start at the top (-90°) and go clockwise around the oval.
+      const angle = -Math.PI / 2 + (index * 2 * Math.PI) / n
 
-      const otherBox = getOccupiedBox(
-        otherNode,
-        otherPosition
-      )
-
-      // Add a small safety gap
-      if (
-        candidateBox.right + GAP > otherBox.left &&
-        candidateBox.left - GAP < otherBox.right &&
-        candidateBox.bottom + GAP > otherBox.top &&
-        candidateBox.top - GAP < otherBox.bottom
-      ) {
-        return true
+      positions[String(person.id)] = {
+        x: ovalCenterX + ovalRadiusX * Math.cos(angle),
+        y: ovalCenterY + ovalRadiusY * Math.sin(angle),
       }
+    })
+  }
+
+  // ---------------------------------------------------------
+  // 2. ENTITY NODES
+  //
+  // Entities are placed near their connected PERSON node(s).
+  // ---------------------------------------------------------
+
+  const entityCounters = new Map()
+
+  // Entities that connect the SAME set of people (e.g. two different
+  // "state" or "vehicle" entities both linking the same two suspects)
+  // all want to sit at the same midpoint. Group them up front so they
+  // can be spaced evenly around that midpoint instead of colliding.
+  const multiPersonGroups = new Map()
+
+  entities.forEach((entity) => {
+    const cp = getConnectedPeople(String(entity.id))
+    if (cp.length > 1) {
+      const key = [...cp].sort().join('|')
+      if (!multiPersonGroups.has(key)) multiPersonGroups.set(key, [])
+      multiPersonGroups.get(key).push(String(entity.id))
     }
+  })
 
-    return false
-  }
-
-  // ----------------------------------------------------------
-  // Try several directions until we find a clear position.
-  // The original position remains the preferred position.
-  // ----------------------------------------------------------
-  if (!hasCollision(x, y)) {
-    return { x, y }
-  }
-
-  const directions = [
-    { x: 1, y: 0 },     // right
-    { x: -1, y: 0 },    // left
-    { x: 0, y: 1 },     // down
-    { x: 0, y: -1 },    // up
-    { x: 1, y: 1 },     // bottom-right
-    { x: -1, y: 1 },    // bottom-left
-    { x: 1, y: -1 },    // top-right
-    { x: -1, y: -1 },   // top-left
-  ]
-
-  // Gradually increase distance from the original position
-  for (let distance = 25; distance <= 250; distance += 15) {
-    for (const direction of directions) {
-      const candidateX =
-        originalPosition.x + direction.x * distance
-
-      const candidateY =
-        originalPosition.y + direction.y * distance
-
-      if (!hasCollision(candidateX, candidateY)) {
-        return {
-          x: candidateX,
-          y: candidateY,
-        }
-      }
-    }
-  }
-
-  // Fallback if no completely clear position was found
-  return { x, y }
-}
-
-  // ----------------------------------------------------------
-  // 2. NON-PERSON ENTITIES
-  // ----------------------------------------------------------
   entities.forEach((entity) => {
     const entityId = String(entity.id)
-    const connectedPeople = getConnectedPeople(entityId)
 
-    let proposedPosition
+    const connectedPeople =
+      getConnectedPeople(entityId)
 
-    // --------------------------------------------------------
+    let x
+    let y
+
+    // -------------------------------------------------------
+    // ENTITY CONNECTED TO ONE PERSON
+    // Push it OUTWARD from the oval, through that person's own
+    // position, and fan multiple entities sideways along the
+    // tangent so they don't stack directly on top of each other.
+    // -------------------------------------------------------
+
+    if (connectedPeople.length === 1) {
+      const personId = connectedPeople[0]
+      const personPos = positions[personId]
+
+      const count =
+        entityCounters.get(personId) || 0
+
+      entityCounters.set(
+        personId,
+        count + 1
+      )
+
+      // Outward unit vector from the oval's centre through the person.
+      let dirX = personPos.x - ovalCenterX
+      let dirY = personPos.y - ovalCenterY
+      const dirLen = Math.hypot(dirX, dirY) || 1
+      dirX /= dirLen
+      dirY /= dirLen
+
+      // Fall back to "downward" when there's no ring to radiate from
+      // (a single, centred person).
+      if (n <= 1) {
+        dirX = 0
+        dirY = 1
+      }
+
+      // Tangent (perpendicular) vector, used to fan entities sideways.
+      const perpX = -dirY
+      const perpY = dirX
+
+      const slot = count % 2          // left / right lane — fewer per
+                                       // ring means more room per label
+      const ring = Math.floor(count / 2) // pushed further out each lap
+
+      const radialDist =
+        PERSON_NODE_HEIGHT / 2 +
+        ENTITY_NODE_SIZE +
+        62 +
+        ring * 105
+
+      const lateralOffset = (slot === 0 ? -1 : 1) * (ENTITY_NODE_SIZE + 88)
+
+      x =
+        personPos.x +
+        dirX * radialDist +
+        perpX * lateralOffset
+
+      y =
+        personPos.y +
+        dirY * radialDist +
+        perpY * lateralOffset
+    }
+
+    // -------------------------------------------------------
+    // ENTITY CONNECTED TO MULTIPLE PEOPLE
+    // Put it between the people.
+    // -------------------------------------------------------
+
+    else if (connectedPeople.length > 1) {
+      const points = connectedPeople
+        .map((id) => positions[id])
+        .filter(Boolean)
+
+      const centerX =
+        points.reduce(
+          (sum, p) => sum + p.x,
+          0
+        ) / points.length
+
+      const centerY =
+        points.reduce(
+          (sum, p) => sum + p.y,
+          0
+        ) / points.length
+
+      // Evenly fan out entities that share this exact same group of
+      // connected people, so they never start out stacked on the
+      // same spot.
+      const groupKey = [...connectedPeople].sort().join('|')
+      const group = multiPersonGroups.get(groupKey) || [entityId]
+      const groupSize = group.length
+      const indexInGroup = Math.max(group.indexOf(entityId), 0)
+
+      const slot = indexInGroup % 4
+      const ring = Math.floor(indexInGroup / 4)
+
+      const angle =
+        groupSize > 1
+          ? (slot * 2 * Math.PI) / Math.min(groupSize, 4)
+          : 0
+
+      const radius = ENTITY_NODE_SIZE + 90 + ring * 100
+
+      x =
+        centerX +
+        Math.cos(angle) * radius
+
+      y =
+        centerY +
+        Math.sin(angle) * radius
+    }
+
+    // -------------------------------------------------------
     // ISOLATED ENTITY
-    // --------------------------------------------------------
-    if (connectedPeople.length === 0) {
-      const column = entities.indexOf(entity) % 6
-      const row = Math.floor(entities.indexOf(entity) / 6)
+    // -------------------------------------------------------
 
-      proposedPosition = {
-        x: 120 + column * 190,
-        y: 585 + row * 90,
-      }
+    else {
+      const index =
+        entities.indexOf(entity)
 
-      positions[entityId] =
-        resolveEntityCollision(entityId, proposedPosition)
+      const cols = 5
 
-      return
+      const col = index % cols
+      const row = Math.floor(index / cols)
+
+      x =
+        marginX +
+        col * ((W - marginX * 2) / (cols - 1))
+
+      y =
+        H - 55 -
+        row * 55
     }
 
-    // --------------------------------------------------------
-    // SHARED ENTITY
-    // Connected to multiple people -> place at their center.
-    // --------------------------------------------------------
-    if (connectedPeople.length >= 2) {
-      const avgX =
-        connectedPeople.reduce(
-          (sum, point) => sum + point.x,
-          0
-        ) / connectedPeople.length
+    // -------------------------------------------------------
+    // KEEP ENTITY INSIDE THE VIRTUAL GRAPH AREA
+    // -------------------------------------------------------
 
-      const avgY =
-        connectedPeople.reduce(
-          (sum, point) => sum + point.y,
-          0
-        ) / connectedPeople.length
-
-      const sharedIndex = entities
-        .slice(0, entities.indexOf(entity))
-        .filter(
-          (item) =>
-            getConnectedPeople(String(item.id)).length >= 2
-        ).length
-
-      const offsetAngle = sharedIndex * 0.9
-      const offsetRadius = 82
-
-      proposedPosition = {
-        x: avgX + offsetRadius * Math.cos(offsetAngle),
-        y: avgY + offsetRadius * Math.sin(offsetAngle),
-      }
-
-      positions[entityId] =
-        resolveEntityCollision(entityId, proposedPosition)
-
-      return
-    }
-
-    // --------------------------------------------------------
-    // SINGLE-PERSON ENTITY
-    // Place it around its connected person.
-    // --------------------------------------------------------
-    const personPosition = connectedPeople[0]
-
-    const connectedPerson = people.find(
-      (person) =>
-        positions[String(person.id)]?.x === personPosition.x &&
-        positions[String(person.id)]?.y === personPosition.y
+    x = Math.max(
+      45,
+      Math.min(W - 45, x)
     )
 
-    const personId = connectedPerson
-      ? String(connectedPerson.id)
-      : null
+    y = Math.max(
+      45,
+      Math.min(H - 45, y)
+    )
 
-    const count = personId
-      ? personEntityCount.get(personId) || 0
-      : 0
-
-    if (personId) {
-      personEntityCount.set(personId, count + 1)
+    positions[entityId] = {
+      x,
+      y,
     }
-
-    const slotAngle =
-      count * (Math.PI / 3) - Math.PI / 2
-
-    const ring =
-      145 + Math.floor(count / 6) * 75
-
-    const ringX = ring * 1.30
-    const ringY = ring * 0.88
-
-    proposedPosition = {
-      x:
-        personPosition.x +
-        ringX * Math.cos(slotAngle),
-
-      y:
-        personPosition.y +
-        ringY * Math.sin(slotAngle),
-    }
-
-    // Only the entity is shifted if it collides.
-    positions[entityId] =
-      resolveEntityCollision(entityId, proposedPosition)
   })
 
   return positions
+}
+
+// ==========================================================
+// HARD NODE + LABEL COLLISION SOLVER
+// ==========================================================
+// PERSON nodes are fixed anchors (they never move).
+// Non-PERSON nodes are pushed away until their full bounding
+// box (circle + label pill) no longer overlaps any other
+// node or label. A larger gap is used when the fixed node is
+// a PERSON so entities never sit under a person name.
+// ==========================================================
+
+const isPersonNode = (node) =>
+  String(node.data('kind') || '').toUpperCase() === 'PERSON'
+
+const getCollisionBox = (node) =>
+  node.boundingBox({
+    includeLabels: true,
+    includeOverlays: false,
+  })
+
+const boxesOverlap = (a, b, gap = 20) => {
+  const overlapX =
+    Math.min(a.x2, b.x2) -
+    Math.max(a.x1, b.x1) +
+    gap
+
+  const overlapY =
+    Math.min(a.y2, b.y2) -
+    Math.max(a.y1, b.y1) +
+    gap
+
+  return {
+    collision: overlapX > 0 && overlapY > 0,
+    overlapX,
+    overlapY,
+  }
+}
+
+function resolveNodeCollisions(cy) {
+  if (!cy) return
+
+  const nodes = cy.nodes().filter((n) => n.visible())
+  if (nodes.length < 2) return
+
+  const GAP_NORMAL = 24
+  const GAP_PERSON = 38   // extra clearance around person + its label
+
+  // ---------- main separation (radial push) ----------
+  for (let iteration = 0; iteration < 380; iteration++) {
+    let collisionFound = false
+
+    for (let i = 0; i < nodes.length; i++) {
+      const a = nodes[i]
+
+      for (let j = i + 1; j < nodes.length; j++) {
+        const b = nodes[j]
+
+        const aPerson = isPersonNode(a)
+        const bPerson = isPersonNode(b)
+
+        // Persons are fixed anchors – never move them relative to each other
+        if (aPerson && bPerson) continue
+
+        const gap = (aPerson || bPerson) ? GAP_PERSON : GAP_NORMAL
+        const result = boxesOverlap(
+          getCollisionBox(a),
+          getCollisionBox(b),
+          gap
+        )
+
+        if (!result.collision) continue
+
+        collisionFound = true
+
+        // The non-person always moves; if both are non-person, move b
+        const moving = aPerson ? b : bPerson ? a : b
+        const fixed  = aPerson ? a : bPerson ? b : a
+
+        const p = moving.position()
+        const q = fixed.position()
+
+        let dx = p.x - q.x
+        let dy = p.y - q.y
+        const dist = Math.sqrt(dx * dx + dy * dy) || 0.001
+
+        if (dist < 1) {
+          const angle = (i + j + iteration) * 2.399963
+          dx = Math.cos(angle)
+          dy = Math.sin(angle)
+        } else {
+          dx /= dist
+          dy /= dist
+        }
+
+        // Push far enough to clear the overlap + a little extra
+        const extra = (aPerson || bPerson) ? 20 : 12
+        const push = Math.max(result.overlapX, result.overlapY) + extra
+
+        moving.position({
+          x: p.x + dx * push,
+          y: p.y + dy * push,
+        })
+      }
+    }
+
+    if (!collisionFound) break
+  }
+
+  // ---------- final cleanup (slightly tighter gap) ----------
+  for (let pass = 0; pass < 80; pass++) {
+    let found = false
+
+    for (let i = 0; i < nodes.length; i++) {
+      const a = nodes[i]
+
+      for (let j = i + 1; j < nodes.length; j++) {
+        const b = nodes[j]
+
+        const aPerson = isPersonNode(a)
+        const bPerson = isPersonNode(b)
+        if (aPerson && bPerson) continue
+
+        const gap = (aPerson || bPerson) ? 28 : 14
+        const result = boxesOverlap(
+          getCollisionBox(a),
+          getCollisionBox(b),
+          gap
+        )
+
+        if (!result.collision) continue
+
+        found = true
+
+        const moving = aPerson ? b : a
+        const fixed  = aPerson ? a : b
+
+        const p = moving.position()
+        const q = fixed.position()
+
+        let dx = p.x - q.x
+        let dy = p.y - q.y
+        const dist = Math.sqrt(dx * dx + dy * dy) || 0.001
+
+        if (dist < 1) {
+          const angle = (i + j + pass) * 2.399963
+          dx = Math.cos(angle)
+          dy = Math.sin(angle)
+        } else {
+          dx /= dist
+          dy /= dist
+        }
+
+        const push = Math.max(result.overlapX, result.overlapY) +
+          ((aPerson || bPerson) ? 18 : 12)
+
+        moving.position({
+          x: p.x + dx * push,
+          y: p.y + dy * push,
+        })
+      }
+    }
+
+    if (!found) break
+  }
 }
 
 export default function GraphView({
@@ -395,7 +531,7 @@ export default function GraphView({
       if (cyRef.current) {
         cyRef.current.resize()
         if (!selectedNodeId) {
-          cyRef.current.fit(undefined, isFullScreen ? 60 : 45)
+          cyRef.current.fit(undefined, isFullScreen ? 90 : 80)
         }
       }
     }, 100)
@@ -422,16 +558,46 @@ export default function GraphView({
       return
     }
 
-    // Organic Physics / Preset Layout
+    // Organic Physics uses the collision-safe calculated positions.
+    // Do not run another force layout here: a second force pass can
+    // pull labels/nodes back together after our collision solver.
     cyRef.current.layout({
       name: 'preset',
-      positions: (node) => initialPositionsRef.current[node.id()] || node.position(),
+
+      positions: (node) =>
+        initialPositionsRef.current[node.id()] ||
+        node.position(),
+
       animate: true,
-      animationDuration: 650,
-      fit: true,
-      padding: 50,
+      animationDuration: 500,
+
+      fit: false,
+
+      padding: 35,
+
+      // Do not run another force simulation after our smart positions.
+      avoidOverlap: false,
+
       easing: 'ease-in-out-cubic',
-    }).run()
+    }).run(() => {
+      const cy = cyRef.current
+      if (!cy) return
+
+      // Wait for Cytoscape to render labels before measuring them.
+      requestAnimationFrame(() => {
+        resolveNodeCollisions(cy)
+
+        // Fit with comfortable padding so the whole oval + labels
+        // are visible without feeling cramped or overly zoomed-out.
+        cy.fit(cy.nodes(), 80)
+
+        // Verify once more after the camera transform.
+        requestAnimationFrame(() => {
+          resolveNodeCollisions(cy)
+          cy.fit(cy.nodes(), 80)
+        })
+      })
+    });
   }
 
   // Initialize and update Cytoscape instance
@@ -482,22 +648,23 @@ export default function GraphView({
           selector: 'node',
           style: {
             'background-color': (ele) => LABEL_COLORS[ele.data('kind')] || '#94A3B8',
-            width: (ele) => NODE_SIZES[ele.data('kind')] || 56,
-            height: (ele) => NODE_SIZES[ele.data('kind')] || 56,
+            shape: 'ellipse',
+            width: (ele) => NODE_SIZES[ele.data('kind')] || ENTITY_NODE_SIZE,
+            height: (ele) => NODE_SIZES[ele.data('kind')] || ENTITY_NODE_SIZE,
             label: 'data(label)',
             color: '#0F172A',
             'font-family': 'Inter, system-ui, -apple-system, sans-serif',
-            'font-size': 13,
+            'font-size': 11,
             'font-weight': 600,
             'text-valign': 'bottom',
             'text-halign': 'center',
-            'text-margin-y': 8,
-            'text-max-width': 130,
+            'text-margin-y': 7,
+            'text-max-width': 190,
             'text-wrap': 'wrap',
             // HIGH-CONTRAST BADGE PILL BACKGROUND FOR NAKED-EYE READABILITY
             'text-background-color': '#FFFFFF',
             'text-background-opacity': 0.96,
-            'text-background-padding': 4,
+            'text-background-padding': 3,
             'text-background-shape': 'roundrectangle',
             'text-border-width': 1,
             'text-border-color': '#CBD5E1',
@@ -513,16 +680,21 @@ export default function GraphView({
             transition: 'all 0.25s ease',
           },
         },
-        // KEY SUSPECT / PERSON NODE (LARGER & BOLDER)
+        // KEY SUSPECT / PERSON NODE — same circular shape as everything
+        // else, just bigger (42px) and bolder, with its name in a pill
+        // underneath like every other node.
         {
           selector: 'node[kind="PERSON"]',
           style: {
-            'font-size': 14.5,
+            'font-size': 13,
             'font-weight': 700,
-            'border-width': 4.5,
+            'border-width': 3.5,
             'border-color': '#FFFFFF',
             'text-border-color': '#93C5FD',
             'text-background-color': '#F8FAFC',
+            'shadow-blur': 12,
+            'shadow-color': 'rgba(37,99,235,0.3)',
+            'z-index': 15,
           },
         },
         // SELECTED NODE HIGHLIGHT
@@ -609,8 +781,8 @@ export default function GraphView({
       ],
       layout: {
         name: 'preset',
-        fit: true,
-        padding: 50,
+        fit: false,
+        padding: 35,
         animate: false,
       },
       wheelSensitivity: 0.2,
@@ -708,7 +880,7 @@ export default function GraphView({
       if (targetNodes.length === 1) {
         cy.animate({
           center: { eles: targetNodes },
-          zoom: 1.35,
+          zoom: 1.2,
           duration: 500,
           easing: 'ease-out-cubic',
         })
@@ -791,14 +963,24 @@ export default function GraphView({
         }
       })
 
-      // Fit graph nicely inside the canvas
-      cy.animate({
-        fit: {
-          eles: cy.elements(),
-          padding: 50,
-        },
-        duration: 650,
-        easing: 'ease-in-out-cubic',
+      // Resolve node + label collisions before fitting.
+      requestAnimationFrame(() => {
+        resolveNodeCollisions(cy)
+
+        cy.animate({
+          fit: {
+            eles: cy.nodes(),
+            padding: 80,
+          },
+          duration: 500,
+          easing: 'ease-in-out-cubic',
+          complete: () => {
+            requestAnimationFrame(() => {
+              resolveNodeCollisions(cy)
+              cy.fit(cy.nodes(), 80)
+            })
+          },
+        })
       })
 
       return
@@ -909,7 +1091,7 @@ export default function GraphView({
               <ZoomOut size={14} />
             </button>
             <button
-              onClick={() => cyRef.current?.fit(undefined, 50)}
+              onClick={() => cyRef.current?.fit(undefined, 80)}
               title="Fit to Screen"
               className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-600 transition cursor-pointer"
             >

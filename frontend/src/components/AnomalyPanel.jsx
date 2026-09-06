@@ -180,7 +180,7 @@ export default function AnomalyPanel({ alerts = [], onRefresh, loading, onFocusN
               {involvedCount > 0 && (
                 <div className="mt-2 pt-1.5 border-t border-black/5 flex items-center justify-between text-[10px] text-slate-500">
                   <span className="truncate max-w-[170px] font-medium">
-                    Target: {a.involved_node_ids.slice(0, 2).join(', ')}{involvedCount > 2 ? ` +${involvedCount - 2}` : ''}
+                    
                   </span>
                   <span className="text-amber-700 font-bold group-hover/item:underline flex items-center gap-0.5">
                     Focus Graph →

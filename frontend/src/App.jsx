@@ -99,7 +99,7 @@ export default function App() {
   // Crisp white theme with subtle ambient colors and dot grid
   // ==========================================================
   return (
-    <div className="relative h-screen flex flex-col bg-[#F8FAFC] text-slate-800 overflow-auto bg-tech-grid">
+    <div className="relative min-h-screen bg-[#F8FAFC] text-slate-800 bg-tech-grid">
       {/* Eye-Catchy Ambient Glow Orbs behind the cards (subtle, airy, light) */}
       <div
         className="pointer-events-none absolute -top-20 -left-20 w-[500px] h-[500px] rounded-full blur-[100px] opacity-40 z-0"
@@ -118,7 +118,7 @@ export default function App() {
       <Navbar apiOnline={apiOnline} />
 
       {/* Main Workspace Area */}
-      <main className="relative z-10 flex-1 overflow-y-auto p-4 lg:p-5 max-w-[1760px] w-full mx-auto flex flex-col gap-4">
+      <main className="relative z-10 p-4 lg:p-5 max-w-[1760px] w-full mx-auto flex flex-col gap-4">
         {/* 2-COLUMN MAIN WORKSPACE */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 flex-1 min-h-[620px]">
           {/* LEFT COLUMN (col-span-4): FIR Input (Top) + Anomaly Panel (Bottom) */}

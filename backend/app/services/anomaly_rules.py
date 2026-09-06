@@ -9,6 +9,7 @@ Each rule is a small function: (rows) -> list[AnomalyAlert].
 Add a new rule by writing a function and registering it in RULES.
 """
 from collections import defaultdict, Counter
+import re
 
 from app.models.schemas import AnomalyAlert
 
@@ -51,7 +52,7 @@ def rule_disproportionate_transfer(rows: list[Row]) -> list[AnomalyAlert]:
 # ---------------------------------------------------------------------------
 # Rule 2: two people meet at the same place repeatedly (>= 3 occurrences).
 # ---------------------------------------------------------------------------
-def rule_recurring_meeting(rows: list[Row]) -> list[AnomalyAlert]:
+def rule_recurring_meeting(rows: list[Row], min_count: int = 3) -> list[AnomalyAlert]:
     counts: Counter = Counter()
     sample: dict[tuple, Row] = {}
     for r in rows:
@@ -61,7 +62,7 @@ def rule_recurring_meeting(rows: list[Row]) -> list[AnomalyAlert]:
             sample[key] = r
     alerts = []
     for key, n in counts.items():
-        if n >= 3:
+        if n >= min_count:
             r = sample[key]
             alerts.append(AnomalyAlert(
                 rule_id="R2", rule_name="Recurring meetings at same location",
@@ -76,51 +77,81 @@ def rule_recurring_meeting(rows: list[Row]) -> list[AnomalyAlert]:
 # Rule 3: structuring / smurfing -- many small transfers to the same
 # target that individually stay under a reporting threshold.
 # ---------------------------------------------------------------------------
-def rule_structuring(rows: list[Row], threshold: float = 10000, min_count: int = 4) -> list[AnomalyAlert]:
+def rule_structuring(
+    rows: list[Row],
+    threshold: float = 500000,
+    min_count: int = 3
+) -> list[AnomalyAlert]:
+    """
+    Flag repeated transfers from the same source to the same target.
+
+    Important: relationship rows may contain amounts as strings (for example
+    "500000" or "Rs 500000"), so normalize the value before comparing it.
+    """
+
     pairs = _group_by_pair(rows, "TRANSFERRED_MONEY")
     alerts = []
+
+    def parse_amount(value):
+        if value is None:
+            return None
+
+        if isinstance(value, (int, float)):
+            return float(value)
+
+        # Handle values such as:
+        # "500000", "500,000", "Rs 500000", "Rs. 500000"
+        text = str(value).strip()
+        text = text.replace(",", "")
+
+        match = re.search(r"[-+]?\d+(?:\.\d+)?", text)
+        if not match:
+            return None
+
+        try:
+            return float(match.group(0))
+        except (TypeError, ValueError):
+            return None
+
     for (src, tgt), group in pairs.items():
-        small = [r for r in group if r.get("amount") and r["amount"] < threshold]
-        if len(small) >= min_count:
-            r = small[0]
-            alerts.append(AnomalyAlert(
-                rule_id="R3", rule_name="Possible structuring (smurfing)",
-                severity="high",
-                description=(
-                    f"{r['source_name']} made {len(small)} separate transfers under "
-                    f"{threshold:.0f} to {r['target_name']} -- possible attempt to avoid reporting limits."
-                ),
-                involved_node_ids=[src, tgt],
-            ))
+
+        qualifying = []
+
+        for r in group:
+            amount = parse_amount(r.get("amount"))
+
+            if amount is not None and amount <= threshold:
+                qualifying.append((r, amount))
+
+        if len(qualifying) >= min_count:
+            first_row, _ = qualifying[0]
+
+            total_amount = sum(
+                amount for _, amount in qualifying
+            )
+
+            alerts.append(
+                AnomalyAlert(
+                    rule_id="R3",
+                    rule_name="Possible structuring (smurfing)",
+                    severity="high",
+                    description=(
+                        f"{first_row['source_name']} made "
+                        f"{len(qualifying)} separate transfers to "
+                        f"{first_row['target_name']}, with individual "
+                        f"transfers up to Rs {threshold:.0f}, totaling "
+                        f"Rs {total_amount:.0f} -- possible structuring "
+                        f"through multiple transfers."
+                    ),
+                    involved_node_ids=[src, tgt],
+                )
+            )
+
     return alerts
 
 
 # ---------------------------------------------------------------------------
-# Rule 4: high-degree hub -- an entity with an unusually large number of
-# distinct connections, suggesting a coordinator / ringleader role.
-# ---------------------------------------------------------------------------
-def rule_high_degree_hub(rows: list[Row], degree_threshold: int = 6) -> list[AnomalyAlert]:
-    degree: Counter = Counter()
-    names: dict[str, str] = {}
-    for r in rows:
-        degree[r["source_id"]] += 1
-        degree[r["target_id"]] += 1
-        names[r["source_id"]] = r["source_name"]
-        names[r["target_id"]] = r["target_name"]
-    alerts = []
-    for node_id, d in degree.items():
-        if d >= degree_threshold:
-            alerts.append(AnomalyAlert(
-                rule_id="R4", rule_name="Unusually high number of connections",
-                severity="medium",
-                description=f"{names.get(node_id, node_id)} is linked to {d} other entities -- possible network hub.",
-                involved_node_ids=[node_id],
-            ))
-    return alerts
-
-
-# ---------------------------------------------------------------------------
-# Rule 5: circular money flow -- A pays B, B pays C, ... back to A.
+# Rule 4: circular money flow -- A pays B, B pays C, ... back to A.
 # ---------------------------------------------------------------------------
 def rule_circular_money_flow(rows: list[Row]) -> list[AnomalyAlert]:
     adj: dict[str, list[Row]] = defaultdict(list)
@@ -143,7 +174,7 @@ def rule_circular_money_flow(rows: list[Row]) -> list[AnomalyAlert]:
                     seen_cycles.add(cycle_key)
                     chain = " -> ".join(names.get(n, n) for n in path + [start])
                     alerts.append(AnomalyAlert(
-                        rule_id="R5", rule_name="Circular money flow",
+                        rule_id="R4", rule_name="Circular money flow",
                         severity="high",
                         description=f"Circular transfer detected: {chain}.",
                         involved_node_ids=list(path),
@@ -158,7 +189,7 @@ def rule_circular_money_flow(rows: list[Row]) -> list[AnomalyAlert]:
 
 
 # ---------------------------------------------------------------------------
-# Rule 6: isolated large one-off transaction between two entities that
+# Rule 5: isolated large one-off transaction between two entities that
 # otherwise have no other relationship on record.
 # ---------------------------------------------------------------------------
 def rule_isolated_large_transaction(rows: list[Row], amount_threshold: float = 100000) -> list[AnomalyAlert]:
@@ -169,7 +200,7 @@ def rule_isolated_large_transaction(rows: list[Row], amount_threshold: float = 1
             if group[0]["amount"] >= amount_threshold:
                 r = group[0]
                 alerts.append(AnomalyAlert(
-                    rule_id="R6", rule_name="Isolated large transaction",
+                    rule_id="R5", rule_name="Isolated large transaction",
                     severity="medium",
                     description=(
                         f"A single large transfer of {r['amount']:.0f} from {r['source_name']} to "
@@ -181,30 +212,96 @@ def rule_isolated_large_transaction(rows: list[Row], amount_threshold: float = 1
 
 
 # ---------------------------------------------------------------------------
-# Rule 7: call shortly followed by a meeting between the same pair --
-# coordination pattern worth flagging for review.
+# Rule 6: two or more different people travelled using the same vehicle.
 # ---------------------------------------------------------------------------
-def rule_call_then_meet(rows: list[Row]) -> list[AnomalyAlert]:
-    called_pairs = {frozenset((r["source_id"], r["target_id"])) for r in rows if r["type"] == "CALLED"}
-    alerts = []
-    seen = set()
+def rule_shared_vehicle(rows: list[Row]) -> list[AnomalyAlert]:
+    """
+    Flag a vehicle that is connected to multiple PERSON nodes through a
+    travel/vehicle-use relationship.
+
+    This is intentionally based on the PERSON -> VEHICLE relationship rather
+    than requiring two person nodes to be directly connected.
+
+    Example:
+        Abdul Karim Telgi travelled ... with vehicle DL01AB1234.
+        Gaurav Aggarwal travelled with vehicle DL01AB1234.
+
+    Both people will be included in the alert.
+    """
+
+    # Relationship names that may be produced by the extraction layer.
+    travel_types = {
+        "TRAVELLED_WITH",
+        "TRAVELED_WITH",
+        "TRAVELLED_IN",
+        "TRAVELED_IN",
+        "USED_VEHICLE",
+        "TRAVELLED",
+        "TRAVELED",
+    }
+
+    vehicle_to_people: dict[str, set[str]] = defaultdict(set)
+    vehicle_names: dict[str, str] = {}
+    person_names: dict[str, str] = {}
+
     for r in rows:
-        if r["type"] in ("MET_AT", "PRESENT_AT"):
-            key = frozenset((r["source_id"], r["target_id"]))
-            if key in called_pairs and key not in seen:
-                seen.add(key)
-                alerts.append(AnomalyAlert(
-                    rule_id="R7", rule_name="Call followed by in-person meeting",
-                    severity="low",
-                    description=f"{r['source_name']} and {r['target_name']} spoke by phone and are also recorded meeting in person.",
-                    involved_node_ids=[r["source_id"], r["target_id"]],
-                ))
+        source_label = str(r.get("source_label", "")).upper()
+        target_label = str(r.get("target_label", "")).upper()
+        rel_type = str(r.get("type", "")).upper()
+
+        # Normal expected shape: PERSON -> VEHICLE.
+        if source_label == "PERSON" and target_label == "VEHICLE":
+            if rel_type in travel_types or not rel_type:
+                vehicle_to_people[r["target_id"]].add(r["source_id"])
+                vehicle_names[r["target_id"]] = r.get(
+                    "target_name", r["target_id"]
+                )
+                person_names[r["source_id"]] = r.get(
+                    "source_name", r["source_id"]
+                )
+
+        # Also support VEHICLE -> PERSON if the extractor stores the edge
+        # in the opposite direction.
+        elif source_label == "VEHICLE" and target_label == "PERSON":
+            if rel_type in travel_types or not rel_type:
+                vehicle_to_people[r["source_id"]].add(r["target_id"])
+                vehicle_names[r["source_id"]] = r.get(
+                    "source_name", r["source_id"]
+                )
+                person_names[r["target_id"]] = r.get(
+                    "target_name", r["target_id"]
+                )
+
+    alerts = []
+
+    for vehicle_id, people in vehicle_to_people.items():
+        if len(people) < 2:
+            continue
+
+        people = list(people)
+        people_names = [person_names.get(p, p) for p in people]
+        vehicle_name = vehicle_names.get(vehicle_id, vehicle_id)
+
+        alerts.append(
+            AnomalyAlert(
+                rule_id="R6",
+                rule_name="Multiple people used the same vehicle",
+                severity="medium",
+                description=(
+                    f"{', '.join(people_names)} travelled using the same "
+                    f"vehicle ({vehicle_name})."
+                ),
+                involved_node_ids=people + [vehicle_id],
+            )
+        )
+
     return alerts
 
 
 # ---------------------------------------------------------------------------
-# Rule 8: two persons share a vehicle/account/phone entity without any
-# direct relationship between the persons themselves.
+# Rule 7: two persons share an account/phone entity without any direct
+# relationship between the persons themselves. Vehicle sharing is handled
+# separately by Rule 6.
 # ---------------------------------------------------------------------------
 def rule_shared_asset_no_direct_link(rows: list[Row]) -> list[AnomalyAlert]:
     asset_to_people: dict[str, set] = defaultdict(set)
@@ -214,7 +311,7 @@ def rule_shared_asset_no_direct_link(rows: list[Row]) -> list[AnomalyAlert]:
     for r in rows:
         names[r["source_id"]] = r["source_name"]
         names[r["target_id"]] = r["target_name"]
-        if r["target_label"] in ("VEHICLE", "ACCOUNT", "PHONE"):
+        if r["target_label"] in ("ACCOUNT", "PHONE"):
             asset_to_people[r["target_id"]].add(r["source_id"])
         if r["source_label"] == "PERSON" and r["target_label"] == "PERSON":
             direct_links.add(frozenset((r["source_id"], r["target_id"])))
@@ -227,7 +324,7 @@ def rule_shared_asset_no_direct_link(rows: list[Row]) -> list[AnomalyAlert]:
                 pair = frozenset((people[i], people[j]))
                 if pair not in direct_links:
                     alerts.append(AnomalyAlert(
-                        rule_id="R8", rule_name="Shared asset, no direct link",
+                        rule_id="R7", rule_name="Shared asset, no direct link",
                         severity="medium",
                         description=(
                             f"{names.get(people[i])} and {names.get(people[j])} are both linked to the "
@@ -239,7 +336,7 @@ def rule_shared_asset_no_direct_link(rows: list[Row]) -> list[AnomalyAlert]:
 
 
 # ---------------------------------------------------------------------------
-# Rule 9: one phone/account entity shared by more than one person --
+# Rule 8: one phone/account entity shared by more than one person --
 # possible shared or fake identity.
 # ---------------------------------------------------------------------------
 def rule_shared_identity_asset(rows: list[Row]) -> list[AnomalyAlert]:
@@ -263,7 +360,7 @@ def rule_shared_identity_asset(rows: list[Row]) -> list[AnomalyAlert]:
             display_asset = asset_names.get(asset_id, asset_id)
 
             alerts.append(AnomalyAlert(
-                rule_id="R9",
+                rule_id="R8",
                 rule_name=f"Shared {label.lower()} across multiple people",
                 severity="high",
                 description=(
@@ -277,7 +374,7 @@ def rule_shared_identity_asset(rows: list[Row]) -> list[AnomalyAlert]:
 
 
 # ---------------------------------------------------------------------------
-# Rule 10: same person entity reappears across more than one case --
+# Rule 9: same person entity reappears across more than one case --
 # links investigations that may not have been previously connected.
 # ---------------------------------------------------------------------------
 def rule_cross_case_reappearance(rows: list[Row]) -> list[AnomalyAlert]:
@@ -294,7 +391,7 @@ def rule_cross_case_reappearance(rows: list[Row]) -> list[AnomalyAlert]:
     for person_id, cases in person_cases.items():
         if len(cases) > 1:
             alerts.append(AnomalyAlert(
-                rule_id="R10", rule_name="Person linked across multiple cases",
+                rule_id="R9", rule_name="Person linked across multiple cases",
                 severity="high",
                 description=f"{names.get(person_id, person_id)} appears in {len(cases)} separate cases: {', '.join(sorted(cases))}.",
                 involved_node_ids=[person_id],
@@ -306,10 +403,9 @@ RULES = [
     rule_disproportionate_transfer,
     rule_recurring_meeting,
     rule_structuring,
-    rule_high_degree_hub,
     rule_circular_money_flow,
     rule_isolated_large_transaction,
-    rule_call_then_meet,
+    rule_shared_vehicle,
     rule_shared_asset_no_direct_link,
     rule_shared_identity_asset,
     rule_cross_case_reappearance,
